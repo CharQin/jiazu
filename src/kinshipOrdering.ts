@@ -10,6 +10,15 @@ export function kinshipOrdering(
     .filter((p) => p.kind !== "friend")
     .sort((a, b) => a.id.localeCompare(b.id));
   const byId = new Map(people.map((p) => [p.id, p]));
+  const siblingsById = new Map(
+    people.map((p) => [p.id, siblingIdsFor(p, people)]),
+  );
+  const childrenById = new Map<string, Person[]>();
+  for (const child of people)
+    for (const id of child.parentIds) {
+      if (!childrenById.has(id)) childrenById.set(id, []);
+      childrenById.get(id)!.push(child);
+    }
   const ranks = new Map<string, number>();
   const direct = new Set<string>();
   function ascend(id: string, rank: number, step: number) {
@@ -26,29 +35,31 @@ export function kinshipOrdering(
   }
   if (data.selfId) ascend(data.selfId, 0, 1);
   // A relative inherits the position of their blood branch; spouses stay beside it.
-  for (let pass = 0; pass < 6; pass++)
+  for (let pass = 0; pass < people.length; pass++) {
+    let changed = false;
     for (const p of people) {
       if (direct.has(p.id)) continue;
       const parents = p.parentIds.filter((id) => ranks.has(id));
-      if (parents.length)
-        ranks.set(
-          p.id,
-          parents.reduce((sum, id) => sum + ranks.get(id)!, 0) / parents.length,
-        );
-      else if (ranks.has(p.partnerId)) ranks.set(p.id, ranks.get(p.partnerId)!);
-      else {
-        const sibling = siblingIdsFor(p, people).find((id) => ranks.has(id));
-        if (sibling) ranks.set(p.id, ranks.get(sibling)!);
+      const sibling = siblingsById.get(p.id)?.find((id) => ranks.has(id));
+      const next = parents.length
+        ? parents.reduce((sum, id) => sum + ranks.get(id)!, 0) / parents.length
+        : (ranks.get(p.partnerId) ??
+          (sibling ? ranks.get(sibling) : undefined));
+      if (next !== undefined && next !== ranks.get(p.id)) {
+        ranks.set(p.id, next);
+        changed = true;
       }
     }
+    if (!changed) break;
+  }
   // Newly recorded in-law ancestors also belong above their known descendants.
   // Only fill unanchored ranks: direct paternal/maternal branches stay stable.
   for (let pass = 0; pass < people.length; pass++) {
     let changed = false;
     for (const p of people) {
       if (ranks.has(p.id)) continue;
-      const children = people.filter(
-        (child) => child.parentIds.includes(p.id) && ranks.has(child.id),
+      const children = (childrenById.get(p.id) ?? []).filter((child) =>
+        ranks.has(child.id),
       );
       const partner = ranks.get(p.partnerId);
       if (children.length || partner !== undefined) {
@@ -86,7 +97,7 @@ export function kinshipOrdering(
     const selfOnLeft =
       self.gender === "male" ||
       (spouse.gender !== "male" && self.gender !== "female");
-    for (const id of siblingIdsFor(self, people)) {
+    for (const id of siblingsById.get(self.id) ?? []) {
       siblingRanks.set(id, baseRank(self) + (selfOnLeft ? -0.2 : 0.2));
       const partner = byId.get(id)?.partnerId;
       if (partner) siblingRanks.set(partner, siblingRanks.get(id)!);
@@ -119,14 +130,23 @@ export function kinshipOrdering(
     const anchors = people.filter(
       (m) => m.generation === p.generation && m.layoutOrder !== undefined,
     );
-    const siblings = new Set(siblingIdsFor(p, people));
+    const siblings = new Set(siblingsById.get(p.id));
     const kin = anchors.filter(
       (m) => siblings.has(m.id) || p.partnerId === m.id || m.partnerId === p.id,
     );
+    const sameHome = anchors.filter((m) => m.familyId === p.familyId);
+    // Manual indices are not automatic indices; an unmatched new relative must
+    // still be placed beside the closest branch in the saved row.
+    const nearestDistance = Math.min(
+      ...anchors.map((m) => Math.abs(rank(m) - rank(p))),
+    );
     const nearby = kin.length
       ? kin
-      : anchors.filter((m) => rank(m) === rank(p));
-    if (!nearby.length) continue;
+      : sameHome.length
+        ? sameHome
+        : anchors.filter(
+            (m) => Math.abs(rank(m) - rank(p)) === nearestDistance,
+          );
     const sorted = nearby.toSorted(automaticCompare);
     const before = sorted.findLast((m) => automaticCompare(m, p) <= 0);
     const after = sorted.find((m) => automaticCompare(m, p) > 0);
@@ -149,14 +169,26 @@ export function kinshipOrdering(
     );
   }
   function compareUnits(a: Person[], b: Person[]) {
-    const score = (unit: Person[]) =>
-      unit.reduce(
-        (sum, p) => sum + (manualRows.has(p.generation) ? order(p) : rank(p)),
-        0,
-      ) / unit.length;
+    const score = (unit: Person[]) => {
+      const manual = manualRows.has(unit[0].generation);
+      const saved = manual
+        ? unit.filter((p) => p.layoutOrder !== undefined)
+        : [];
+      const slots = saved.length ? saved : unit;
+      return (
+        slots.reduce((sum, p) => sum + (manual ? order(p) : rank(p)), 0) /
+        slots.length
+      );
+    };
     return score(a) - score(b) || compare(a[0], b[0]);
   }
   function pair(a: Person, b: Person) {
+    if (
+      a.layoutOrder !== undefined &&
+      b.layoutOrder !== undefined &&
+      a.layoutOrder !== b.layoutOrder
+    )
+      return a.layoutOrder - b.layoutOrder;
     if (direct.has(a.id) && direct.has(b.id)) return compare(a, b);
     return (
       Number(b.gender === "male") - Number(a.gender === "male") ||

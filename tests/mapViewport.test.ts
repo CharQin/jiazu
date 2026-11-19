@@ -1,6 +1,11 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { fitMapView, retainMapView } from "../src/mapViewport.ts";
+import {
+  centerMapView,
+  fitMapView,
+  retainMapView,
+  zoomMapView,
+} from "../src/mapViewport.ts";
 import { createBranchDemo } from "./fixtures.ts";
 import { makeGenerationLayout } from "../src/treeLayout.ts";
 
@@ -129,4 +134,48 @@ test("friend anchors retain the view and an empty replacement never invents a vi
     retainMapView(view, before, new Map(), { width: 390, height: 560 }, false),
     view,
   );
+});
+
+test("zooming a 100-row overview does not jump to an arbitrary minimum", () => {
+  const viewport = { width: 390, height: 560 };
+  const overview = fitMapView(
+    { left: 0, right: 600, top: 0, bottom: 19200 },
+    viewport,
+    true,
+  );
+  assert.ok(overview.scale < 0.12);
+  const at = { x: 210, y: 252 };
+  const zoomed = zoomMapView(overview, 1.05, overview.scale, at);
+  assert.equal(zoomed.scale, overview.scale * 1.05);
+  const restored = zoomMapView(zoomed, 0.01, overview.scale, at);
+  assert.equal(restored.scale, overview.scale);
+  assert.ok(
+    Math.hypot(restored.x - overview.x, restored.y - overview.y) < 1e-9,
+  );
+});
+
+test("the same map point stays under a moving pinch even at maximum zoom", () => {
+  const from = { x: 160, y: 200 };
+  const to = { x: 210, y: 250 };
+  const view = { scale: 1.4, x: -60, y: -100 };
+  const result = zoomMapView(view, 3, 0.03, from, to);
+  assert.equal(result.scale, 2);
+  assert.ok(
+    Math.abs(
+      ((from.x - view.x) / view.scale) * result.scale + result.x - to.x,
+    ) < 1e-9,
+  );
+  assert.ok(
+    Math.abs(
+      ((from.y - view.y) / view.scale) * result.scale + result.y - to.y,
+    ) < 1e-9,
+  );
+});
+
+test("locating a new distant member puts its card in the usable phone viewport", () => {
+  const p = { x: 2612, y: 19100 };
+  const view = centerMapView(p, 1.4, { width: 390, height: 560 }, true);
+  assert.equal(view.x + p.x * view.scale, 231);
+  assert.equal(view.y + p.y * view.scale, 264);
+  assert.equal(view.scale, 1.4);
 });

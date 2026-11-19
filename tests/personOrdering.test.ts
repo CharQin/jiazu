@@ -92,3 +92,29 @@ test("manual sorting keeps partners together even when they belong to different 
   assert.ok(layout.nodes.get("brother")!.x < layout.nodes.get("me")!.x);
   assert.equal(layout.nodes.get("wife")!.x - layout.nodes.get("me")!.x, 192);
 });
+
+test("crossing a partner reverses the couple's slots and survives backup restore", () => {
+  const data = createDemo();
+  const row = ["cousin", "me", "wife", "m-cousin"];
+  assert.deepEqual(
+    reorderPersonIds(data.people, row, "me", "wife", false),
+    row,
+  );
+  const swapped = reorderPersonIds(data.people, row, "me", "wife", true);
+  assert.deepEqual(swapped, ["cousin", "wife", "me", "m-cousin"]);
+  const saved = validateData(
+    JSON.parse(
+      JSON.stringify({
+        ...data,
+        people: applyPersonOrder(data.people, swapped),
+      }),
+    ),
+  );
+  const x = (id: string) => makeGenerationLayout(saved).nodes.get(id)!.x;
+  assert.equal(x("me") - x("wife"), 192);
+  assert.ok(x("cousin") < x("wife") && x("me") < x("m-cousin"));
+  assert.deepEqual(
+    reorderPersonIds(saved.people, swapped, "me", "wife", false),
+    row,
+  );
+});

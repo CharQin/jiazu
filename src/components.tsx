@@ -1,3 +1,4 @@
+import { generationName } from "./generations";
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import {
@@ -24,7 +25,6 @@ import {
   familyName,
   personName,
   isFriend,
-  generationNames,
   relationshipPath,
   visibleFamilyMembers,
   maritalStatusInfo,
@@ -332,9 +332,7 @@ export function Profile({
           {person.deceased ? <Memorial /> : years || "年龄待补充"}
           <i />
           {person.occupation ||
-            (isFriend(person)
-              ? "家庭朋友"
-              : generationNames[person.generation])}
+            (isFriend(person) ? "家庭朋友" : generationName(person.generation))}
         </p>
         <div className="profile-tags">
           {person.tags.map((t) => (

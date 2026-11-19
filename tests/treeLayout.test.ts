@@ -238,3 +238,165 @@ test("a household member with relationships still blank stays below that househo
   assert.ok(x("zz-new-home-child") >= Math.min(x("me"), x("brother")) - 1);
   assert.ok(x("zz-new-home-child") <= Math.max(x("me"), x("brother")) + 1);
 });
+
+test("a sibling-only addition joins its family instead of the edge of an unrelated row", () => {
+  const data = createEmpty();
+  const self = { ...data.people[0], birthday: "1990-01-01" };
+  const other = {
+    ...self,
+    id: "unrelated",
+    birthday: "2000-01-01",
+    familyId: "other",
+  };
+  const added = {
+    ...self,
+    id: "added",
+    birthday: "2010-01-01",
+    siblingIds: [self.id],
+  };
+  data.people = [self, other, added];
+  data.families.push({ id: "other", name: "", branch: "other" });
+  const layout = makeGenerationLayout(data);
+  const x = (id: string) => layout.nodes.get(id)!.x;
+  assert.ok(x(self.id) < x(added.id) && x(added.id) < x(other.id));
+});
+
+test("a 100-generation tree keeps each elder and descendant on its own row", () => {
+  const data = createEmpty();
+  const self = data.people[0];
+  data.people = Array.from({ length: 100 }, (_, i) => ({
+    ...self,
+    id: i === 50 ? self.id : `relative-${i}`,
+    generation: i - 48,
+    parentIds: !i ? [] : [i === 51 ? self.id : `relative-${i - 1}`],
+  }));
+  const layout = makeGenerationLayout(data);
+  assert.equal(layout.generations.length, 100);
+  assert.equal(layout.nodes.size, 100);
+  assert.ok(layout.nodes.get("relative-0")!.y < layout.nodes.get(self.id)!.y);
+  assert.ok(layout.nodes.get(self.id)!.y < layout.nodes.get("relative-99")!.y);
+});
+
+test("new great-grandparents align to where their children are placed, even across a manually reordered row", () => {
+  const data = createDemo();
+  const person = (id: string) => data.people.find((p) => p.id === id)!;
+  const main = [...data.people.filter((p) => p.generation === 0)].sort(
+    (a, b) => Number(a.id.startsWith("m-")) - Number(b.id.startsWith("m-")),
+  );
+  // Put the maternal grandparents to the left of the paternal grandparents.
+  for (const [index, p] of [...main.slice(2), ...main.slice(0, 2)].entries())
+    p.layoutOrder = index * 1024;
+  const older = {
+    ...person("grandpa"),
+    generation: -1,
+    partnerId: "",
+    layoutOrder: undefined,
+    parentIds: [],
+  };
+  person("grandpa").parentIds = ["earlier"];
+  person("m-grandpa").parentIds = ["newest"];
+  data.people.push({ ...older, id: "earlier" }, { ...older, id: "newest" });
+  const { nodes, width } = makeGenerationLayout(data);
+  const x = (id: string) => nodes.get(id)!.x;
+  assert.ok(x("m-grandpa") < x("grandpa"));
+  assert.ok(x("newest") < x("earlier"));
+  assert.ok(
+    Math.abs(x("newest") - x("m-grandpa")) <
+      Math.abs(x("newest") - x("grandpa")),
+  );
+  assert.equal(width / 2, (x("me") + x("wife")) / 2);
+});
+
+test("a singleton with a linked parent follows its branch and an unlinked elder stays centered", () => {
+  const data = createDemo();
+  const person = (id: string) => data.people.find((p) => p.id === id)!;
+  const oldest = {
+    ...person("grandpa"),
+    id: "great-grandfather",
+    generation: -1,
+    partnerId: "",
+    parentIds: [],
+  };
+  person("grandpa").parentIds = [oldest.id];
+  // Attach the only descendant on this row to an existing branch off center.
+  const youngest = {
+    ...person("kid"),
+    id: "cousins-child",
+    parentIds: ["m-cousin"],
+  };
+  data.people = data.people.filter((p) => p.id !== "kid");
+  data.people.push(oldest, youngest, {
+    ...oldest,
+    id: "folded-friend",
+    kind: "friend",
+    friendOfId: oldest.id,
+  });
+  oldest.familyId = "ancestor";
+  data.people.at(-1)!.familyId = oldest.familyId;
+  data.families.push({ id: oldest.familyId, name: "", branch: "father" });
+  const { nodes, friendGroups, width } = makeGenerationLayout(data);
+  assert.equal(nodes.get(oldest.id)!.x, width / 2);
+  assert.equal(nodes.get(youngest.id)!.x, nodes.get("m-cousin")!.x);
+  assert.ok(nodes.get("grandpa")!.x < width / 2);
+  assert.ok(nodes.get("m-cousin")!.x > width / 2);
+  assert.equal(friendGroups.get(oldest.familyId)!.x - width / 2, 208);
+});
+
+test("all generations share the initial ten-card width until one row needs more room", () => {
+  const data = createEmpty();
+  const self = data.people[0];
+  data.people.push(
+    { ...self, id: "elder", generation: 0 },
+    { ...self, id: "younger", generation: 3 },
+  );
+  const initial = makeGenerationLayout(data);
+  for (let i = 2; i <= 10; i++)
+    data.people.push({ ...self, id: `sibling-${i}` });
+  const ten = makeGenerationLayout(data);
+  assert.equal(ten.width, initial.width);
+  for (const group of ten.groups) {
+    assert.ok(
+      group.x - group.width / 2 >= 0 && group.x + group.width / 2 <= ten.width,
+    );
+  }
+  data.people.push({ ...self, id: "sibling-11" });
+  const eleven = makeGenerationLayout(data);
+  assert.ok(eleven.width > ten.width);
+  for (const id of ["elder", "younger"])
+    assert.equal(eleven.nodes.get(id)!.x, eleven.width / 2);
+  for (const group of eleven.groups) {
+    assert.ok(
+      group.x - group.width / 2 >= 0 &&
+        group.x + group.width / 2 <= eleven.width,
+    );
+  }
+  data.people.pop();
+  assert.equal(makeGenerationLayout(data).width, initial.width);
+});
+
+test("a single child is centered under both parents and its own child stays on that branch", () => {
+  const data = createDemo();
+  const child = data.people.find((p) => p.id === "kid")!;
+  const parent1 = data.people.find((p) => p.id === "m-cousin")!;
+  const parent2 = {
+    ...parent1,
+    id: "cousins-partner",
+    parentIds: [],
+    partnerId: parent1.id,
+  };
+  parent1.partnerId = parent2.id;
+  child.parentIds = [parent1.id, parent2.id];
+  const grandchild = {
+    ...child,
+    id: "only-grandchild",
+    generation: 4,
+    parentIds: [child.id],
+  };
+  data.people.push(parent2, grandchild);
+  const { nodes, width } = makeGenerationLayout(data);
+  const x = (id: string) => nodes.get(id)!.x;
+  const parentCenter = (x(parent1.id) + x(parent2.id)) / 2;
+  assert.ok(Math.abs(parentCenter - width / 2) > 1);
+  assert.ok(Math.abs(x(child.id) - parentCenter) < 1e-8);
+  assert.ok(Math.abs(x(grandchild.id) - x(child.id)) < 1e-8);
+});

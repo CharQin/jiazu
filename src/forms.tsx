@@ -1,3 +1,9 @@
+import {
+  firstGeneration,
+  generationName,
+  lastGeneration,
+  selfGeneration,
+} from "./generations";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import {
@@ -18,11 +24,8 @@ import { AvatarCropper } from "./AvatarCropper";
 import { relationExclusions } from "./automaticKinship";
 import { birthdayParts, birthdayError, completeBirthday } from "./birthday";
 import {
-  branchInfo,
-  familyName,
   personName,
   isFriend,
-  generationNames,
   today,
   uid,
   visibleFamilyMembers,
@@ -31,7 +34,6 @@ import {
   editableMaritalStatus,
 } from "./model";
 import type {
-  Branch,
   FamilyData,
   Gender,
   MaritalStatus,
@@ -110,7 +112,7 @@ export function PersonForm({
   data: FamilyData;
   initial?: Person;
   defaults?: Partial<Pick<Person, "familyId" | "kind" | "friendOfId">>;
-  onSave: (p: Person, family?: { branch: Branch }, childIds?: string[]) => void;
+  onSave: (p: Person, childIds: string[]) => void;
   onCancel: () => void;
 }) {
   const [draft, setDraft] = useState<Person>(() =>
@@ -149,12 +151,11 @@ export function PersonForm({
           friendOfId: defaults?.friendOfId ?? "",
           parentIds: [],
           partnerId: "",
-          generation: 2,
+          generation: selfGeneration,
           tags: [],
         },
   );
-  const [newBranch, setNewBranch] = useState<Branch>("other"),
-    [error, setError] = useState(""),
+  const [error, setError] = useState(""),
     [tagText, setTagText] = useState(initial?.tags.join("，") ?? "");
   const initialRoles = initial
     ? parentRoles(initial, data.people)
@@ -236,7 +237,6 @@ export function PersonForm({
               excludedSiblingIds: resolved.excludedSiblingIds,
             }
           : {}),
-        familyId: placement.familyId,
         generation: placement.generation,
       }));
       setError("");
@@ -254,6 +254,21 @@ export function PersonForm({
   const candidates = visibleFamilyMembers(data).filter(
     (p) => p.id !== draft.id && !isFriend(p),
   );
+  const otherGenerations = data.people
+    .filter((p) => p.id !== draft.id && !isFriend(p))
+    .map((p) => p.generation);
+  const minGeneration =
+    Math.max(selfGeneration, ...otherGenerations) -
+    (lastGeneration - selfGeneration);
+  const maxGeneration =
+    Math.min(selfGeneration, ...otherGenerations) +
+    (selfGeneration - firstGeneration);
+  const generationOptions = automaticGeneration
+    ? [draft.generation]
+    : Array.from(
+        { length: maxGeneration - minGeneration + 1 },
+        (_, i) => minGeneration + i,
+      );
   function photo(file?: File) {
     if (!file) return;
     try {
@@ -305,11 +320,7 @@ export function PersonForm({
           ),
         ].slice(0, 6),
       };
-      onSave(
-        value,
-        draft.familyId === "new" ? { branch: newBranch } : undefined,
-        isFriend(draft) ? [] : childIds,
-      );
+      onSave(value, isFriend(draft) ? [] : childIds);
     } catch (e) {
       setError(e instanceof Error ? e.message : "无法保存，请检查资料");
     }
@@ -569,100 +580,50 @@ export function PersonForm({
       )}
       <div className="form-section-title">
         <span>家庭与辈分</span>
-        <small>{isFriend(draft) ? "朋友收纳在家庭旁" : "可调整所属家庭"}</small>
+        <small>
+          {isFriend(draft) ? "朋友收纳在关联家人旁" : "家庭按亲属关系自动分组"}
+        </small>
       </div>
       <div className="form-grid">
-        <label>
-          所属家庭
-          <select
-            value={draft.familyId}
-            onChange={(e) => {
-              change("familyId", e.target.value);
-              change("friendOfId", "");
-            }}
-          >
-            {data.families
-              .filter(
-                (f) =>
-                  f.id === draft.familyId ||
-                  visibleFamilyMembers(data).some((p) => p.familyId === f.id),
-              )
-              .map((f) => (
-                <option key={f.id} value={f.id}>
-                  {familyName(f, data.people) || "未命名家庭"}
-                </option>
-              ))}
-            <option value="new">＋ 新建一个小家庭</option>
-          </select>
-        </label>
-        {!isFriend(draft) && (
-          <label>
+        {!isFriend(draft) ? (
+          <label className="span-two">
             辈分（以我为参照）
             <select
               value={draft.generation}
               disabled={automaticGeneration}
               onChange={(e) => change("generation", Number(e.target.value))}
             >
-              {generationNames.map((n, i) => (
-                <option value={i} key={n}>
-                  {n}
+              {generationOptions.map((g) => (
+                <option value={g} key={g}>
+                  {generationName(g)}
                 </option>
               ))}
             </select>
           </label>
-        )}
-        {isFriend(draft) && (
-          <label>
+        ) : (
+          <label className="span-two">
             关联家人
             <select
               value={draft.friendOfId ?? ""}
               onChange={(e) => change("friendOfId", e.target.value)}
             >
               <option value="">暂不指定</option>
-              {candidates
-                .filter((p) => p.familyId === draft.familyId)
-                .map((p) => (
-                  <option value={p.id} key={p.id}>
-                    {personName(p, data.selfId)}
-                  </option>
-                ))}
-            </select>
-          </label>
-        )}
-        {draft.familyId === "new" && (
-          <label className="span-two">
-            所属分支
-            <select
-              value={newBranch}
-              onChange={(e) => setNewBranch(e.target.value as Branch)}
-            >
-              {Object.entries(branchInfo).map(([b, info]) => (
-                <option key={b} value={b}>
-                  {info.label}
+              {candidates.map((p) => (
+                <option value={p.id} key={p.id}>
+                  {personName(p, data.selfId)}
                 </option>
               ))}
             </select>
           </label>
         )}
-        {!isFriend(draft) && automaticGeneration && (
+        {!isFriend(draft) && (
           <p className="placement-hint span-two">
-            辈分随父母、伴侣、兄弟姐妹和儿女的连接自动同步；独立成家的家人可保留各自家庭。
+            {automaticGeneration
+              ? "已按亲属关系自动计算辈分。"
+              : "可先选辈分，连接亲属后会自动调整。"}
+            已婚子女会自动独立成家。
           </p>
         )}
-        <p className="family-name-hint span-two">
-          家庭名称：
-          <strong>
-            {familyName({ id: draft.familyId }, [
-              ...data.people.filter((p) => p.id !== draft.id),
-              {
-                ...draft,
-                birthday: completeBirthday(birth),
-                birthdayParts: birth,
-              },
-            ])}
-          </strong>
-          <small>按在世家人中辈分最高、同辈年龄最大者的姓名自动命名。</small>
-        </p>
       </div>
       <div className="form-section-title">
         <span>再多了解一点</span>

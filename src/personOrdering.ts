@@ -1,3 +1,4 @@
+import { householdPairs } from "./households.ts";
 import type { Person } from "./model.ts";
 
 export function applyPersonOrder(
@@ -35,20 +36,32 @@ export function reorderPersonIds(
       byId.get(id)?.generation === moving.generation &&
       byId.get(id)?.kind !== "friend",
   );
+  const partner = householdPairs(people);
+  if (
+    row.includes(movingId) &&
+    row.includes(targetId) &&
+    partner.get(movingId) === targetId
+  ) {
+    const movingIndex = row.indexOf(movingId),
+      targetIndex = row.indexOf(targetId);
+    // Dragging a card across its partner reverses the two existing slots.
+    if (after === movingIndex < targetIndex)
+      [row[movingIndex], row[targetIndex]] = [
+        row[targetIndex],
+        row[movingIndex],
+      ];
+    return row;
+  }
   const crossFamily = moving.familyId !== target.familyId;
   const unit = (p: Person) =>
     row.filter((id) => {
       const other = byId.get(id)!;
-      if (!crossFamily)
-        return id === p.id || other.partnerId === p.id || p.partnerId === id;
+      if (!crossFamily) return id === p.id || partner.get(p.id) === id;
       return (
         other.familyId === p.familyId ||
         row.some((memberId) => {
           const member = byId.get(memberId)!;
-          return (
-            member.familyId === p.familyId &&
-            (member.partnerId === id || other.partnerId === member.id)
-          );
+          return member.familyId === p.familyId && partner.get(memberId) === id;
         })
       );
     });

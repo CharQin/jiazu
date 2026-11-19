@@ -1,3 +1,4 @@
+import { checkGenerationSpan, selfGeneration } from "./generations.ts";
 import type { Branch, FamilyData, Person } from "./model.ts";
 import { siblingIdsFor } from "./familyRelations.ts";
 import {
@@ -141,10 +142,7 @@ export function upsertKinship(
               ? ""
               : p.partnerId,
         friendOfId:
-          p.friendOfId === person.id &&
-          (p.familyId !== person.familyId || !relative(person))
-            ? ""
-            : p.friendOfId,
+          p.friendOfId === person.id && !relative(person) ? "" : p.friendOfId,
       };
     });
   // Editing must preserve the member's original position in lists and layouts.
@@ -203,11 +201,13 @@ export function synchronizeGenerations(
       relatives.find((p) => p.id !== editedId && offsets.has(p.id)) ??
       edited);
   const base =
-    (anchor.id === selfId ? 2 : anchor.generation) - offsets.get(anchor.id)!;
-  for (const offset of offsets.values()) {
-    if (base + offset < 0 || base + offset > 4)
-      throw new Error("这组关系超出当前祖辈至孙辈的五代范围，请检查亲属连接");
-  }
+    (anchor.id === selfId ? selfGeneration : anchor.generation) -
+    offsets.get(anchor.id)!;
+  checkGenerationSpan(
+    relatives.map((p) =>
+      offsets.has(p.id) ? base + offsets.get(p.id)! : p.generation,
+    ),
+  );
   return people.map((p) =>
     offsets.has(p.id) ? { ...p, generation: base + offsets.get(p.id)! } : p,
   );

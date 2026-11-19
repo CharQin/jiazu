@@ -1,3 +1,4 @@
+import { automaticHouseholds } from "./households";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
@@ -135,8 +136,9 @@ export default function App() {
     importInput = useRef<HTMLInputElement>(null),
     initialLoad = useRef(true);
   function setData(next: FamilyData) {
+    const organized = automaticHouseholds(completeFamilyRelations(next));
     setSaveStatus("saving");
-    setStoredData(completeFamilyRelations(next));
+    setStoredData(organized);
   }
   async function load() {
     try {
@@ -294,14 +296,20 @@ export default function App() {
     confirmAction.current = action;
     setModal("confirm");
   }
-  function savePerson(
-    person: Person,
-    newFamily?: { branch: Branch },
-    childIds?: string[],
-  ) {
-    const next = saveFamilyPerson(data!, person, newFamily, childIds);
+  function savePerson(person: Person, childIds?: string[]) {
+    const next = saveFamilyPerson(data!, person, undefined, childIds);
     setData(next);
     setSelectedId(person.id);
+    if (!editingPerson) {
+      if (route !== "map") navigate("map");
+      else {
+        setFilter("all");
+        setQuery("");
+        setSearchOpen(false);
+      }
+      setFocusId(person.id);
+      setMapVersion((v) => v + 1);
+    }
     setModal(null);
     setToast(
       editingPerson
@@ -398,8 +406,12 @@ export default function App() {
     try {
       if (file.size > 30 * 1024 * 1024)
         throw new Error("备份过大，请使用 30 MB 以内的文件");
-      const next = validateData(
-        migrateData(validateData(JSON.parse(await file.text()))),
+      const next = automaticHouseholds(
+        completeFamilyRelations(
+          validateData(
+            migrateData(validateData(JSON.parse(await file.text()))),
+          ),
+        ),
       );
       confirm(
         "恢复这份家族备份？",
@@ -729,7 +741,6 @@ export default function App() {
                 </div>
                 {mapFilterBar}
                 <FamilyMap
-                  key={`${mapVersion}-${fullMap}-${tree}`}
                   data={data}
                   tree={tree}
                   filter={filter}
@@ -737,6 +748,7 @@ export default function App() {
                   selectedId={selected.id}
                   onSelect={showPerson}
                   focusId={focusId}
+                  focusVersion={mapVersion}
                   onAddPerson={addFamilyPerson}
                   onReorder={(ids) => {
                     setData({
@@ -1261,7 +1273,7 @@ export default function App() {
                     <br />
                     每一种关系，都值得被记住。
                   </p>
-                  <span className="version-tag">家族 1.8.0 · 离线版</span>
+                  <span className="version-tag">家族 1.9.4 · 离线版</span>
                   <div>
                     <CheckCheck size={16} />
                     {saveStatus === "saved"

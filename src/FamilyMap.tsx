@@ -22,23 +22,31 @@ import { Avatar } from "./Avatar";
 import { Memorial } from "./Memorial";
 import {
   branchInfo,
-  generationNames,
   isFriend,
   personName,
   familyName,
   visibleFamilyMembers,
   ageLabel,
 } from "./model";
+import { generationName } from "./generations";
+import { automaticHouseholds, householdPairs } from "./households";
 import { deriveBranches } from "./kinship";
 import type { Branch, FamilyData, Person } from "./model";
 import { makeGenerationLayout } from "./treeLayout";
 import type { GenerationRow } from "./treeLayout";
-import { fitMapView, retainMapView } from "./mapViewport";
+import {
+  centerMapView,
+  confineTreeView,
+  fitMapView,
+  retainMapView,
+  zoomMapView,
+} from "./mapViewport";
 import type { MapView } from "./mapViewport";
 import { routeFamilyMap } from "./mapRouting";
-import { applyPersonOrder, reorderPersonIds } from "./personOrdering";
+import { reorderPersonIds } from "./personOrdering";
 import { kinshipOrdering } from "./kinshipOrdering";
 import {
+  generationSpacing,
   householdHeight,
   partnerSpacing,
   personCardHeight,
@@ -86,6 +94,7 @@ function makeLayout(
     (a, b) => Number(b.id === selfFamily) - Number(a.id === selfFamily),
   );
   const ordering = kinshipOrdering(data);
+  const partners = householdPairs(data.people);
   const networkSlots = new Map(
     visibleFamilies.map((f) => {
       const members = data.people.filter(
@@ -97,8 +106,7 @@ function makeLayout(
         if (placed.has(p.id)) continue;
         placed.add(p.id);
         const partner = members.find(
-          (m) =>
-            !placed.has(m.id) && (m.id === p.partnerId || m.partnerId === p.id),
+          (m) => !placed.has(m.id) && m.id === partners.get(p.id),
         );
         if (partner) {
           placed.add(partner.id);
@@ -239,6 +247,7 @@ export function FamilyMap({
   selectedId,
   onSelect,
   focusId,
+  focusVersion,
   onAddPerson,
   onReorder,
 }: {
@@ -249,25 +258,35 @@ export function FamilyMap({
   selectedId: string;
   onSelect: (p: Person) => void;
   focusId: string;
-  onAddPerson: (familyId: string, kind: "family" | "friend") => void;
+  focusVersion: number;
+  onAddPerson: (
+    familyId: string,
+    kind: "family" | "friend",
+    friendOfId?: string,
+  ) => void;
   onReorder: (ids: string[]) => void;
 }) {
-  const { families, selfId } = data;
-  const [previewOrder, setPreviewOrder] = useState<string[] | null>(null);
-  const people = useMemo(
-    () =>
-      visibleFamilyMembers(
-        previewOrder
-          ? { ...data, people: applyPersonOrder(data.people, previewOrder) }
-          : data,
-      ),
-    [data, previewOrder],
+  const { selfId } = data;
+  const mapData = useMemo(
+    () => (tree ? data : automaticHouseholds(data, true)),
+    [data, tree],
   );
+  const people = useMemo(() => {
+    // Apply starter visibility to the stored data, before regrouping for display.
+    const shown = new Set(visibleFamilyMembers(data).map((p) => p.id));
+    return mapData.people.filter((p) => shown.has(p.id));
+  }, [data, mapData]);
   const branches = useMemo(() => deriveBranches(data), [data]);
   const layout = useMemo(
-    () => makeLayout({ people, families, selfId }, tree),
-    [people, families, selfId, tree],
+    () => makeLayout({ people, families: mapData.families, selfId }, tree),
+    [people, mapData.families, selfId, tree],
   );
+  function addToGroup(familyId: string, kind: "family" | "friend") {
+    const host = people.find((p) => p.familyId === familyId && !isFriend(p));
+    const originalFamily =
+      data.people.find((p) => p.id === host?.id)?.familyId ?? familyId;
+    onAddPerson(originalFamily, kind, kind === "friend" ? host?.id : undefined);
+  }
   const connections = useMemo(
     () => routeFamilyMap(data.people, layout.nodes, tree, layout.friendGroups),
     [data.people, layout, tree],
@@ -301,15 +320,16 @@ export function FamilyMap({
   }, [view]);
   const [dragging, setDragging] = useState(false);
   const [sortingId, setSortingId] = useState("");
-  const [floatingPoint, setFloatingPoint] = useState<Position | null>(null);
   const sort = useRef<{
     id: string;
     pointerId: number;
     order: string[];
     initialOrder: string[];
+    positions: Map<string, Position>;
     startX: number;
     originX: number;
-    y: number;
+    node: HTMLElement;
+    lastTarget?: string;
   } | null>(null);
   const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingPress = useRef<{
@@ -319,189 +339,253 @@ export function FamilyMap({
     y: number;
   } | null>(null);
   const [expandedFamily, setExpandedFamily] = useState(() => {
-    const focus = data.people.find((p) => p.id === focusId);
+    const focus = mapData.people.find((p) => p.id === focusId);
     return focus && isFriend(focus) ? focus.familyId : "";
   });
   const pointers = useRef(new Map<number, Position>());
-  const gesture = useRef({ x: 0, y: 0, distance: 0, moved: false });
+  const gesture = useRef({ x: 0, y: 0, moved: false });
   const clickGuard = useRef(0);
-  const viewMode = useRef<"auto" | "full" | "self" | "manual">("auto");
-  const previousFocus = useRef(focusId);
-  const previousTree = useRef(tree);
-  const structureKey = useMemo(
-    () =>
-      JSON.stringify(
-        data.people.map((p) => [
-          p.id,
-          p.name,
-          p.familyId,
-          p.generation,
-          p.birthday,
-          p.birthdayParts,
-          p.parentIds,
-          p.parentRoles,
-          p.partnerId,
-          p.siblingIds,
-          p.kind,
-        ]),
-      ),
-    [data.people],
+  const viewMode = useRef<"auto" | "full" | "self" | "focus" | "manual">(
+    "auto",
   );
-  const previousStructure = useRef(structureKey);
-  const previousMap = useRef({
-    ids: new Set(data.people.map((p) => p.id)),
-    layout,
-    selfId,
-  });
+  const previous = useRef<{
+    tree: boolean;
+    selfId: string;
+    focusVersion: number;
+    layout: Layout;
+  } | null>(null);
+  const viewportSize = useRef({ width: 0, height: 0 });
+  const minScale = useRef(0.12);
+  const bounds = useMemo(() => {
+    let left = Infinity,
+      right = -Infinity,
+      top = Infinity,
+      bottom = -Infinity;
+    function include(x: number, y: number) {
+      left = Math.min(left, x);
+      right = Math.max(right, x);
+      top = Math.min(top, y);
+      bottom = Math.max(bottom, y);
+    }
+    for (const g of layout.groups) {
+      include(g.x - g.width / 2, g.y - g.height / 2);
+      include(g.x + g.width / 2, g.y + g.height / 2);
+    }
+    for (const p of linePoints) include(p.x, p.y);
+    if (!Number.isFinite(left))
+      return { left: 0, right: layout.width, top: 0, bottom: layout.height };
+    return {
+      left: left - 8,
+      right: right + 8,
+      top: top - 8,
+      bottom: bottom + 8,
+    };
+  }, [layout, linePoints]);
+  const focused = mapData.people.find((p) => p.id === focusId);
+  const friendFocus = focused && isFriend(focused) ? focused.familyId : "";
+  const focusPoint =
+    layout.nodes.get(focusId) ?? layout.friendGroups.get(friendFocus);
   const fit = useCallback(
-    (center = false, layers = false, centerId = "") => {
-      if (!container.current) return;
-      const { width, height } = container.current.getBoundingClientRect();
-      const inset = tree ? 72 : 0;
-      const bounds = {
-        left:
-          Math.min(
-            ...layout.groups.map((g) => g.x - g.width / 2),
-            ...linePoints.map((p) => p.x),
-          ) - 8,
-        right:
-          Math.max(
-            ...layout.groups.map((g) => g.x + g.width / 2),
-            ...linePoints.map((p) => p.x),
-          ) + 8,
-        top:
-          Math.min(
-            ...layout.groups.map((g) => g.y - g.height / 2),
-            ...linePoints.map((p) => p.y),
-          ) - 8,
-        bottom:
-          Math.max(
-            ...layout.groups.map((g) => g.y + g.height / 2),
-            ...linePoints.map((p) => p.y),
-          ) + 8,
+    (
+      mode: "full" | "self" | "focus" | "auto",
+      viewport: { width: number; height: number },
+      keepScale = false,
+    ) => {
+      const full = fitMapView(bounds, viewport, tree);
+      const overview = Math.min(
+        0.95,
+        Math.max(1, viewport.height - 100) /
+          Math.max(1, bounds.bottom - bounds.top),
+      );
+      minScale.current = Math.min(0.12, full.scale, overview);
+      const reference = layout.nodes.get(selfId) ?? {
+        x: layout.width / 2,
+        y: layout.height / 2,
       };
-      if (!center && !layers) {
-        setView(fitMapView(bounds, { width, height }, tree));
-        return;
-      }
-      const own = data.people.find((p) => p.id === data.selfId);
-      const ownPoint = layout.nodes.get(data.selfId);
-      const partnerPoint = own?.partnerId
-        ? layout.nodes.get(own.partnerId)
-        : undefined;
-      const coupleCenter =
-        ownPoint &&
-        partnerPoint &&
-        ownPoint.y === partnerPoint.y &&
-        Math.abs(ownPoint.x - partnerPoint.x) <= partnerSpacing + 1
-          ? (ownPoint.x + partnerPoint.x) / 2
-          : ownPoint?.x;
-      const scale = center
-        ? Math.min(0.95, width < 600 ? 0.78 : 0.97)
-        : layers
-          ? Math.min(0.95, (height - 100) / (bounds.bottom - bounds.top))
-          : 1;
-      const point = center
-        ? (layout.nodes.get(centerId || focusId || data.selfId) ??
-          layout.friendGroups.get(
-            data.people.find((p) => p.id === (centerId || focusId))?.familyId ??
-              "",
-          ) ?? {
-            x: layout.width / 2,
-            y: layout.height / 2,
-          })
-        : {
-            x: layers
-              ? (coupleCenter ?? layout.width / 2)
-              : (bounds.left + bounds.right) / 2,
-            y: (bounds.top + bounds.bottom) / 2,
-          };
-      setView({
-        scale,
-        x: (width + inset) / 2 - point.x * scale,
-        y: (height - 32) / 2 - point.y * scale,
-      });
+      const defaultScale = viewport.width < 600 ? 0.78 : 0.95;
+      if (
+        mode === "full" ||
+        (mode === "auto" && !tree && viewport.width >= 600)
+      )
+        setView(full);
+      else if (mode === "focus" && focusPoint)
+        setView((view) => {
+          const target =
+            focused && isFriend(focused)
+              ? { x: focusPoint.x, y: focusPoint.y + 100 }
+              : focusPoint;
+          const readableScale = keepScale
+            ? Math.max(defaultScale, view.scale)
+            : defaultScale;
+          const cardFits = Math.max(
+            0.1,
+            Math.min(
+              (viewport.width - (tree ? 72 : 0) - 16) / personCardWidth,
+              (viewport.height - 60) / personCardHeight,
+            ),
+          );
+          return centerMapView(
+            target,
+            Math.min(cardFits, readableScale),
+            viewport,
+            tree,
+          );
+        });
+      else if (mode === "self" || !tree)
+        setView(centerMapView(reference, defaultScale, viewport, tree));
+      else
+        setView(
+          centerMapView(
+            {
+              x: layout.width / 2,
+              y: (bounds.top + bounds.bottom) / 2,
+            },
+            overview,
+            viewport,
+            tree,
+          ),
+        );
     },
-    [layout, linePoints, focusId, data.selfId, data.people, tree],
+    [bounds, focusPoint, focused, layout, selfId, tree],
   );
   useLayoutEffect(() => {
-    const previous = previousMap.current;
-    const ids = new Set(data.people.map((p) => p.id));
-    const removed =
-      ids.size < previous.ids.size &&
-      [...ids].every((id) => previous.ids.has(id));
-    const sameContext =
-      previousFocus.current === focusId &&
-      previousTree.current === tree &&
-      previous.selfId === selfId;
-    previousMap.current = { ids, layout, selfId };
-    if (removed && sameContext && container.current) {
-      const viewport = container.current.getBoundingClientRect();
+    const el = container.current;
+    if (!el) return;
+    const viewport = el.getBoundingClientRect();
+    const before = previous.current;
+    previous.current = { tree, selfId, focusVersion, layout };
+    const newContext =
+      !before || before.tree !== tree || before.selfId !== selfId;
+    const newFocus =
+      Boolean(focusPoint) &&
+      (newContext || before.focusVersion !== focusVersion);
+    const measure = () => {
+      const size = el.getBoundingClientRect();
+      minScale.current = Math.min(0.12, fitMapView(bounds, size, tree).scale);
+      return size;
+    };
+    measure();
+    if (newFocus || newContext) {
+      viewMode.current = newFocus ? "focus" : "auto";
+      setExpandedFamily(newFocus ? friendFocus : "");
+      fit(viewMode.current, viewport, !newContext);
+    } else if (before.layout !== layout && !sort.current) {
       const points = (map: Layout) =>
         new Map([
-          ...[...map.nodes].map(([id, p]) => [`person:${id}`, p] as const),
+          ...[...map.nodes].map(
+            ([id, point]) => [`person:${id}`, point] as const,
+          ),
           ...[...map.friendGroups].map(
-            ([id, p]) => [`friends:${id}`, p] as const,
+            ([id, point]) => [`friends:${id}`, point] as const,
           ),
         ]);
+      // Saving or deleting data should keep the viewed branch in place.
       viewMode.current = "manual";
-      previousStructure.current = structureKey;
-      setView((current) => ({
-        ...retainMapView(
-          current,
-          points(previous.layout),
+      setView((v) => {
+        const retained = retainMapView(
+          v,
+          points(before.layout),
           points(layout),
           viewport,
           tree,
-        ),
-        instant: true,
-      }));
+        );
+        return {
+          ...(tree
+            ? confineTreeView(retained, layout.width, viewport.width)
+            : retained),
+          instant: true,
+        };
+      });
     }
-    if (
-      previousFocus.current !== focusId ||
-      previousTree.current !== tree ||
-      previousStructure.current !== structureKey
-    ) {
-      viewMode.current = "auto";
-      previousFocus.current = focusId;
-      previousTree.current = tree;
-      previousStructure.current = structureKey;
-    }
-    const reset = () => {
-      if (viewMode.current === "manual") return;
-      if (viewMode.current === "full") {
-        fit(false);
-        return;
-      }
-      if (viewMode.current === "self") {
-        fit(true, false, selfId);
-        return;
-      }
-      fit(
-        Boolean(focusId) || (!tree && window.innerWidth < 600),
-        tree && !focusId,
-      );
-    };
-    reset();
-    const observer = new ResizeObserver(() => reset());
-    if (container.current) observer.observe(container.current);
-    return () => observer.disconnect();
-  }, [fit, focusId, tree, selfId, data.people, layout, structureKey]);
-  const zoom = useCallback((factor: number, point?: Position) => {
-    if (!container.current) return;
-    viewMode.current = "manual";
-    const rect = container.current.getBoundingClientRect();
-    const at = point ?? { x: rect.width / 2, y: rect.height / 2 };
-    setView((v) => {
-      const scale = Math.max(0.12, Math.min(2, v.scale * factor)),
-        ratio = scale / v.scale;
-      return {
-        scale,
-        x: at.x - (at.x - v.x) * ratio,
-        y: at.y - (at.y - v.y) * ratio,
-      };
+    if (!viewportSize.current.width || newContext)
+      viewportSize.current = viewport;
+    const observer = new ResizeObserver(() => {
+      const size = measure();
+      const last = viewportSize.current;
+      if (size.width === last.width && size.height === last.height) return;
+      viewportSize.current = size;
+      if (viewMode.current === "manual" || viewMode.current === "focus")
+        setView((v) => ({
+          ...v,
+          x: v.x + (size.width - last.width) / 2,
+          y: v.y + (size.height - last.height) / 2,
+        }));
+      else fit(viewMode.current, size);
     });
-  }, []);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [
+    bounds,
+    fit,
+    focusPoint,
+    friendFocus,
+    focusVersion,
+    layout,
+    selfId,
+    tree,
+  ]);
+  const world = useRef<HTMLDivElement>(null);
+  const generationLabels = useRef<HTMLDivElement>(null);
+  const friendsPanel = useRef<HTMLDivElement>(null);
+  const liveView = useRef<MapView>(view);
+  const motionFrame = useRef(0);
+  const gestureRect = useRef({ left: 0, top: 0 });
+  const panelPoint = layout.friendGroups.get(expandedFamily);
+  // Pan and pinch paint only the moving layer. Commit React state at the end
+  // so moving one finger does not reconcile every person and connection.
+  useLayoutEffect(() => {
+    if (!pointers.current.size) liveView.current = view;
+  }, [view]);
+  useEffect(() => () => cancelAnimationFrame(motionFrame.current), []);
+  function paintMap() {
+    const { x, y, scale } = liveView.current;
+    if (world.current)
+      world.current.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${scale})`;
+    if (generationLabels.current) {
+      generationLabels.current.style.transform = `translate3d(0, ${y}px, 0)`;
+      const value = String(scale);
+      if (
+        generationLabels.current.style.getPropertyValue("--label-scale") !==
+        value
+      )
+        generationLabels.current.style.setProperty("--label-scale", value);
+    }
+    if (friendsPanel.current && panelPoint) {
+      friendsPanel.current.style.left = `clamp(10px, ${x + panelPoint.x * scale + 25}px, calc(100% - 290px))`;
+      friendsPanel.current.style.top = `clamp(42px, ${y + panelPoint.y * scale - 30}px, calc(100% - 280px))`;
+    }
+  }
+  function moveMap(next: MapView) {
+    viewMode.current = "manual";
+    liveView.current = tree
+      ? confineTreeView(next, layout.width, viewportSize.current.width)
+      : next;
+    if (motionFrame.current) return;
+    motionFrame.current = requestAnimationFrame(() => {
+      motionFrame.current = 0;
+      paintMap();
+    });
+  }
+  const wheelZoom = useCallback(
+    (factor: number, point: Position) => {
+      viewMode.current = "manual";
+      setView((v) => {
+        const next = zoomMapView(
+          v,
+          factor,
+          Math.min(minScale.current, v.scale),
+          point,
+        );
+        return {
+          ...(tree
+            ? confineTreeView(next, layout.width, viewportSize.current.width)
+            : next),
+          instant: true,
+        };
+      });
+    },
+    [tree, layout.width],
+  );
   useEffect(() => {
     const el = container.current;
     if (!el) return;
@@ -509,14 +593,14 @@ export function FamilyMap({
       if ((e.target as HTMLElement).closest(".friends-panel")) return;
       e.preventDefault();
       const r = el.getBoundingClientRect();
-      zoom(Math.exp(-e.deltaY * 0.002), {
+      wheelZoom(Math.exp(-e.deltaY * 0.002), {
         x: e.clientX - r.left,
         y: e.clientY - r.top,
       });
     };
     el.addEventListener("wheel", wheel, { passive: false });
     return () => el.removeEventListener("wheel", wheel);
-  }, [zoom]);
+  }, [wheelZoom]);
   function cancelPress() {
     if (pressTimer.current) clearTimeout(pressTimer.current);
     pressTimer.current = null;
@@ -539,11 +623,10 @@ export function FamilyMap({
       .map((p) => p.id);
   }
   function cancelSort() {
+    if (sort.current) sort.current.node.style.transform = "";
     sort.current = null;
     cancelPress();
     setSortingId("");
-    setFloatingPoint(null);
-    setPreviewOrder(null);
     clickGuard.current = Date.now() + 600;
   }
   function pointerDown(e: ReactPointerEvent) {
@@ -554,6 +637,9 @@ export function FamilyMap({
       )
     )
       return;
+    if (pointers.current.size >= 2) return;
+    if (!pointers.current.size)
+      gestureRect.current = e.currentTarget.getBoundingClientRect();
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     cancelPress();
     if (pointers.current.size > 1 && sort.current) cancelSort();
@@ -579,27 +665,23 @@ export function FamilyMap({
           pointerId: pending.pointerId,
           order,
           initialOrder: order,
+          positions: new Map(
+            order.map((member) => [member, layout.nodes.get(member)!]),
+          ),
           startX: pending.x,
           originX: point.x,
-          y: point.y,
+          node,
         };
         setSortingId(id);
-        setFloatingPoint(point);
-        setDragging(false);
         viewMode.current = "manual";
         container.current?.setPointerCapture(pending.pointerId);
         clickGuard.current = Date.now() + 600;
       }, 450);
     }
-    const pts = [...pointers.current.values()];
     gesture.current = {
       x: e.clientX,
       y: e.clientY,
-      distance:
-        pts.length === 2
-          ? Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
-          : 0,
-      moved: false,
+      moved: pointers.current.size > 1,
     };
     setDragging(true);
   }
@@ -609,83 +691,93 @@ export function FamilyMap({
     if (current && current.pointerId === e.pointerId) {
       e.preventDefault();
       pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      const x = current.originX + (e.clientX - current.startX) / view.scale;
-      setFloatingPoint({ x, y: current.y });
-      const candidates = current.order
-        .filter((id) => id !== current.id)
-        .map((id) => ({ id, point: layout.nodes.get(id)! }));
-      const target = candidates.sort(
-        (a, b) => Math.abs(a.point.x - x) - Math.abs(b.point.x - x),
-      )[0];
-      if (target && Math.abs(target.point.x - x) < personCardWidth * 0.6) {
-        const next = reorderPersonIds(
-          data.people,
-          current.order,
-          current.id,
-          target.id,
-          x > target.point.x,
-        );
-        if (next.join() !== current.order.join()) {
-          current.order = next;
-          setPreviewOrder(next);
+      const dx = (e.clientX - current.startX) / liveView.current.scale;
+      const x = current.originX + dx;
+      current.node.style.transform = `translate3d(${dx}px, 0, 0)`;
+      let closest: { id: string; x: number } | undefined;
+      for (const [id, point] of current.positions) {
+        if (id === current.id || Math.abs(point.x - x) >= personCardWidth * 0.6)
+          continue;
+        if (!closest || Math.abs(point.x - x) < Math.abs(closest.x - x))
+          closest = { id, x: point.x };
+      }
+      if (closest) {
+        const after = x > closest.x;
+        const key = JSON.stringify([closest.id, after]);
+        if (key !== current.lastTarget) {
+          current.lastTarget = key;
+          current.order = reorderPersonIds(
+            data.people,
+            current.initialOrder,
+            current.id,
+            closest.id,
+            after,
+          );
         }
+      } else if (Math.abs(dx) < personCardWidth * 0.4) {
+        current.lastTarget = undefined;
+        current.order = current.initialOrder;
       }
       return;
     }
-    if (pendingPress.current) {
+    if (!gesture.current.moved) {
+      // Apply the same small tap tolerance on a card and on the canvas.
       if (
         Math.hypot(
-          e.clientX - pendingPress.current.x,
-          e.clientY - pendingPress.current.y,
-        ) <= 8
+          e.clientX - gesture.current.x,
+          e.clientY - gesture.current.y,
+        ) < 4
       )
         return;
+      gesture.current.moved = true;
       cancelPress();
     }
-    viewMode.current = "manual";
     const old = pointers.current.get(e.pointerId)!;
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    const pts = [...pointers.current.values()];
-    if (
-      Math.hypot(e.clientX - gesture.current.x, e.clientY - gesture.current.y) >
-      5
-    )
-      gesture.current.moved = true;
-    if (pts.length === 2) {
-      const distance = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
-        rect = container.current!.getBoundingClientRect();
-      if (gesture.current.distance)
-        zoom(distance / gesture.current.distance, {
-          x: (pts[0].x + pts[1].x) / 2 - rect.left,
-          y: (pts[0].y + pts[1].y) / 2 - rect.top,
-        });
-      gesture.current.distance = distance;
+    const currentView = liveView.current;
+    if (pointers.current.size === 2) {
+      const other = [...pointers.current.entries()].find(
+        ([id]) => id !== e.pointerId,
+      )![1];
+      const distance = Math.hypot(e.clientX - other.x, e.clientY - other.y);
+      const previousDistance = Math.hypot(old.x - other.x, old.y - other.y);
+      const { left, top } = gestureRect.current;
+      if (distance > 0 && previousDistance > 0)
+        moveMap(
+          zoomMapView(
+            currentView,
+            distance / previousDistance,
+            Math.min(minScale.current, currentView.scale),
+            { x: (old.x + other.x) / 2 - left, y: (old.y + other.y) / 2 - top },
+            {
+              x: (e.clientX + other.x) / 2 - left,
+              y: (e.clientY + other.y) / 2 - top,
+            },
+          ),
+        );
     } else {
-      setView((v) => ({
-        ...v,
-        x: v.x + e.clientX - old.x,
-        y: v.y + e.clientY - old.y,
-      }));
+      moveMap({
+        ...currentView,
+        x: currentView.x + e.clientX - old.x,
+        y: currentView.y + e.clientY - old.y,
+      });
     }
-    if (
-      gesture.current.moved &&
-      !container.current!.hasPointerCapture(e.pointerId)
-    )
-      container.current!.setPointerCapture(e.pointerId);
+    if (!e.currentTarget.hasPointerCapture(e.pointerId))
+      e.currentTarget.setPointerCapture(e.pointerId);
   }
   function pointerUp(e: ReactPointerEvent) {
+    if (!pointers.current.has(e.pointerId)) return;
     cancelPress();
     pointers.current.delete(e.pointerId);
     if (sort.current?.pointerId === e.pointerId) {
       const current = sort.current;
       const order = current.order;
+      current.node.style.transform = "";
       sort.current = null;
       setSortingId("");
-      setFloatingPoint(null);
-      setPreviewOrder(null);
       clickGuard.current = Date.now() + 600;
       if (
-        e.type !== "pointercancel" &&
+        e.type === "pointerup" &&
         order.join() !== current.initialOrder.join()
       )
         onReorder(order);
@@ -695,8 +787,16 @@ export function FamilyMap({
       return;
     }
     if (gesture.current.moved) clickGuard.current = Date.now() + 250;
-    gesture.current.distance = 0;
-    if (!pointers.current.size) setDragging(false);
+    if (!pointers.current.size) {
+      if (motionFrame.current) {
+        cancelAnimationFrame(motionFrame.current);
+        motionFrame.current = 0;
+        paintMap();
+      }
+      if (gesture.current.moved)
+        setView({ ...liveView.current, instant: true });
+      setDragging(false);
+    }
   }
   function visible(p: Person) {
     return (
@@ -705,6 +805,10 @@ export function FamilyMap({
     );
   }
   const { edges, routes, siblings } = connections;
+  const axisStep = Math.max(
+    1,
+    Math.ceil(20 / (view.scale * generationSpacing)),
+  );
   return (
     <div
       className={`map-canvas ${tree ? "generation-tree" : ""} ${dragging ? "is-dragging" : ""} ${expandedFamily ? "friends-open" : ""} ${view.instant ? "preserve-map-view" : ""}`}
@@ -719,21 +823,38 @@ export function FamilyMap({
       onPointerMove={pointerMove}
       onPointerUp={pointerUp}
       onPointerCancel={pointerUp}
+      onLostPointerCapture={(e) => {
+        // Mobile browsers implicitly capture on the touched card. That card
+        // loses capture when the canvas takes over; the finger is still down.
+        if (e.target === e.currentTarget) pointerUp(e);
+      }}
+      onPointerLeave={(e) => {
+        if (
+          pointers.current.has(e.pointerId) &&
+          !e.currentTarget.hasPointerCapture(e.pointerId)
+        )
+          pointerUp(e);
+      }}
+      onScroll={(e) => {
+        e.currentTarget.scrollLeft = 0;
+        e.currentTarget.scrollTop = 0;
+      }}
     >
       <div className="map-hint" role="status" aria-live="polite">
         <Hand size={13} />{" "}
         {sortingId
-          ? "左右拖动排序 · 松手保存"
+          ? "左右拖动排序 · 越过伴侣可换位"
           : tree
             ? "同辈同层 · 长按人物排序 · 双指缩放"
             : "双指缩放，拖动发现更多家人"}
       </div>
       <div
         className="map-world"
+        ref={world}
         style={{
           width: layout.width,
           height: layout.height,
-          transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
+          transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale})`,
           transition: view.instant ? "none" : undefined,
         }}
       >
@@ -741,7 +862,7 @@ export function FamilyMap({
           layout.generations.map((row) => (
             <div
               key={row.generation}
-              className={`generation-band generation-${row.generation}`}
+              className={`generation-band generation-${Math.max(0, Math.min(4, row.generation))}`}
               style={{
                 top: row.y + 6 - householdHeight / 2,
                 height: householdHeight + 12,
@@ -752,7 +873,7 @@ export function FamilyMap({
         {layout.groups.map((g) => (
           <div
             key={g.id}
-            className={`${tree ? "tree-household" : "family-cluster"} ${filter !== "all" && !people.some((p) => p.familyId === g.familyId && branches.get(p.id)?.has(filter)) ? "dimmed" : ""} ${!tree && g.id === data.people.find((p) => p.id === data.selfId)?.familyId ? "my-cluster" : ""}`}
+            className={`${tree ? "tree-household" : "family-cluster"} ${filter !== "all" && !people.some((p) => p.familyId === g.familyId && branches.get(p.id)?.has(filter)) ? "dimmed" : ""} ${!tree && g.id === mapData.people.find((p) => p.id === selfId)?.familyId ? "my-cluster" : ""}`}
             style={
               {
                 left: g.x - g.width / 2,
@@ -772,7 +893,7 @@ export function FamilyMap({
                   className="cluster-add-friend"
                   aria-label={`为${g.name || "这个家庭"}添加家人或朋友`}
                   title="添加家人或朋友"
-                  onClick={() => onAddPerson(g.familyId, "family")}
+                  onClick={() => addToGroup(g.familyId, "family")}
                 >
                   <UserRoundPlus size={13} />
                 </button>
@@ -905,8 +1026,6 @@ export function FamilyMap({
                 ? filter
                 : sides?.values().next().value) ?? "other";
             const years = ageLabel(p);
-            const actualPoint =
-              p.id === sortingId && floatingPoint ? floatingPoint : point;
             return (
               <button
                 key={p.id}
@@ -914,8 +1033,8 @@ export function FamilyMap({
                 className={`person-node gender-${p.gender} ${p.id === sortingId ? "sorting-node" : ""} ${p.deceased ? "deceased-node" : ""} ${p.id === data.selfId ? "self-node" : ""} ${p.id === selectedId ? "selected-node" : ""} ${!visible(p) ? "dimmed" : ""}`}
                 style={
                   {
-                    left: actualPoint.x - cardHalfWidth,
-                    top: actualPoint.y - cardHalfHeight,
+                    left: point.x - cardHalfWidth,
+                    top: point.y - cardHalfHeight,
                     "--node-accent": branchInfo[branch].color,
                   } as CSSProperties
                 }
@@ -932,15 +1051,7 @@ export function FamilyMap({
                   const ids = rowOrder(p.id),
                     index = ids.indexOf(p.id),
                     direction = e.key === "ArrowLeft" ? -1 : 1;
-                  let target = index + direction;
-                  while (
-                    target >= 0 &&
-                    target < ids.length &&
-                    (ids[target] === p.partnerId ||
-                      data.people.find((other) => other.id === ids[target])
-                        ?.partnerId === p.id)
-                  )
-                    target += direction;
+                  const target = index + direction;
                   if (ids[target]) {
                     viewMode.current = "manual";
                     onReorder(
@@ -984,10 +1095,10 @@ export function FamilyMap({
             );
           })}
         {[...layout.friendGroups].map(([familyId, point]) => {
-          const friends = data.people.filter(
+          const friends = people.filter(
             (p) => isFriend(p) && p.familyId === familyId,
           );
-          const family = data.families.find((f) => f.id === familyId)!;
+          const family = mapData.families.find((f) => f.id === familyId)!;
           const matching = friends.filter(visible).length;
           return (
             <button
@@ -1026,13 +1137,14 @@ export function FamilyMap({
         layout.friendGroups.has(expandedFamily) &&
         (() => {
           const point = layout.friendGroups.get(expandedFamily)!;
-          const family = data.families.find((f) => f.id === expandedFamily)!;
-          const friends = data.people.filter(
+          const family = mapData.families.find((f) => f.id === expandedFamily)!;
+          const friends = people.filter(
             (p) => isFriend(p) && p.familyId === expandedFamily,
           );
           return (
             <div
               className="friends-panel"
+              ref={friendsPanel}
               style={{
                 left: `clamp(10px, ${view.x + point.x * view.scale + 25}px, calc(100% - 290px))`,
                 top: `clamp(42px, ${view.y + point.y * view.scale - 30}px, calc(100% - 280px))`,
@@ -1066,7 +1178,7 @@ export function FamilyMap({
                       <strong>{personName(p)}</strong>
                       <small>
                         {p.friendOfId
-                          ? `${personName(data.people.find((m) => m.id === p.friendOfId)!)}的朋友`
+                          ? `${personName(data.people.find((m) => m.id === p.friendOfId) ?? p)}的朋友`
                           : "家庭朋友"}
                       </small>
                     </span>
@@ -1079,7 +1191,7 @@ export function FamilyMap({
                 className="friend-panel-add"
                 onClick={() => {
                   setExpandedFamily("");
-                  onAddPerson(expandedFamily, "friend");
+                  addToGroup(expandedFamily, "friend");
                 }}
               >
                 <UserRoundPlus size={16} />
@@ -1093,16 +1205,29 @@ export function FamilyMap({
           className={`generation-axis ${view.scale < 0.4 ? "compact-axis" : ""} ${view.scale < 0.2 ? "tiny-axis" : ""}`}
           aria-label="辈分层级"
         >
-          {layout.generations.map((row) => (
-            <div
-              key={row.generation}
-              className={`generation-label generation-${row.generation} ${row.generation === data.people.find((p) => p.id === data.selfId)?.generation ? "my-generation" : ""}`}
-              style={{ top: view.y + row.y * view.scale }}
-            >
-              <strong>{generationNames[row.generation]}</strong>
-              <small>{row.count ? `${row.count} 位家人` : "待记录"}</small>
-            </div>
-          ))}
+          <div
+            className="generation-labels"
+            ref={generationLabels}
+            style={
+              {
+                transform: `translate3d(0, ${view.y}px, 0)`,
+                "--label-scale": view.scale,
+              } as CSSProperties
+            }
+          >
+            {layout.generations
+              .filter((_, i) => i % axisStep === 0)
+              .map((row) => (
+                <div
+                  key={row.generation}
+                  className={`generation-label generation-${Math.max(0, Math.min(4, row.generation))} ${row.generation === data.people.find((p) => p.id === data.selfId)?.generation ? "my-generation" : ""}`}
+                  style={{ "--label-y": `${row.y}px` } as CSSProperties}
+                >
+                  <strong>{generationName(row.generation)}</strong>
+                  <small>{row.count ? `${row.count} 位家人` : "待记录"}</small>
+                </div>
+              ))}
+          </div>
         </div>
       )}
       <div className="map-legend">
@@ -1132,7 +1257,8 @@ export function FamilyMap({
           onClick={() => {
             viewMode.current = "full";
             setExpandedFamily("");
-            fit(false);
+            if (container.current)
+              fit("full", container.current.getBoundingClientRect());
           }}
         >
           <Scan size={18} />
@@ -1143,7 +1269,8 @@ export function FamilyMap({
           onClick={() => {
             viewMode.current = "self";
             setExpandedFamily("");
-            fit(true, false, data.selfId);
+            if (container.current)
+              fit("self", container.current.getBoundingClientRect());
           }}
         >
           <Crosshair size={18} />

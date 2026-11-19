@@ -531,6 +531,7 @@
 }
 .map-world {
   position: absolute;
+  z-index: 0;
   left: 0;
   top: 0;
   transform-origin: 0 0;
@@ -695,8 +696,19 @@
   background: linear-gradient(90deg, #fcfdfbf5 80%, #fcfdfb00);
   overflow: hidden;
 }
+.generation-labels {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+  transition: transform 0.25s cubic-bezier(0.2, 0.75, 0.25, 1);
+}
+.is-dragging .generation-labels,
+.preserve-map-view .generation-labels {
+  transition: none;
+}
 .generation-label {
   position: absolute;
+  top: calc(var(--label-y) * var(--label-scale));
   left: 11px;
   width: 52px;
   transform: translateY(-50%);
@@ -706,10 +718,6 @@
   color: var(--generation-ink);
   background: var(--generation-bg);
   border: 1px solid color-mix(in srgb, var(--generation-ink) 16%, transparent);
-  transition: top 0.25s cubic-bezier(0.2, 0.75, 0.25, 1);
-}
-.is-dragging .generation-label {
-  transition: none;
 }
 .generation-label strong {
   display: block;
@@ -962,10 +970,15 @@
   color: #a0a791;
   margin-top: 5px;
 }
-.person-node:hover {
-  box-shadow: 0 6px 17px #3a4f3026;
-  z-index: 2;
-  border-color: var(--node-accent);
+.person-node[data-person-id] > * {
+  pointer-events: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  .map-canvas:not(.is-dragging) .person-node:hover {
+    box-shadow: 0 6px 17px #3a4f3026;
+    z-index: 2;
+    border-color: var(--node-accent);
+  }
 }
 .person-node.selected-node {
   border-color: var(--node-accent);
@@ -1085,7 +1098,8 @@
   padding: 3px;
   gap: 0;
   cursor: default;
-  z-index: 2;
+  z-index: 10;
+  touch-action: manipulation;
 }
 .map-controls button {
   width: 32px;

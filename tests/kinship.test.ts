@@ -103,23 +103,6 @@ test("conflicting or out-of-range generations fail atomically", () => {
       }),
     /辈分.*冲突/,
   );
-  const grandchild = {
-    ...data.people[0],
-    id: "grandchild",
-    parentIds: ["kid"],
-    partnerId: "",
-    generation: 4,
-  };
-  const withGrandchild = saveFamilyPerson(data, grandchild);
-  assert.throws(
-    () =>
-      saveFamilyPerson(withGrandchild, {
-        ...grandchild,
-        id: "fifth",
-        parentIds: [grandchild.id],
-      }),
-    /五代范围/,
-  );
   const cyclic = structuredClone(data.people);
   cyclic.find((p) => p.id === "grandpa")!.parentIds = ["me"];
   assert.throws(
@@ -127,6 +110,56 @@ test("conflicting or out-of-range generations fail atomically", () => {
     /冲突/,
   );
   assert.deepEqual(data, before);
+});
+
+test("a connected tree accepts 100 generations in either direction and rejects the 101st", () => {
+  for (const direction of [-1, 1]) {
+    const data = createEmpty();
+    const self = data.people[0];
+    for (let i = 1; i <= 100; i++) {
+      const id = `relative-${i}`;
+      const previous = data.people.at(-1)!;
+      if (direction === -1) previous.parentIds = [id];
+      data.people.push({
+        ...self,
+        id,
+        parentIds: direction === 1 ? [previous.id] : [],
+        generation: 2,
+      });
+    }
+    const last = data.people.pop()!;
+    if (direction === -1) data.people.at(-1)!.parentIds = [];
+    data.people = synchronizeGenerations(data.people, data.selfId, data.selfId);
+    assert.equal(data.people.at(-1)!.generation, 2 + 99 * direction);
+    assert.equal(
+      validateData(JSON.parse(JSON.stringify(data))).people.length,
+      100,
+    );
+    if (direction === -1) data.people.at(-1)!.parentIds = [last.id];
+    assert.throws(
+      () =>
+        synchronizeGenerations([...data.people, last], data.selfId, last.id),
+      /最多支持 100 代/,
+    );
+  }
+});
+
+test("the 100-generation limit also applies across both directions", () => {
+  const data = createEmpty();
+  const self = data.people[0];
+  const elder = { ...self, id: "elder", generation: -47 };
+  const descendant = { ...self, id: "descendant", generation: 52 };
+  const people = [self, elder, descendant];
+  assert.doesNotThrow(() => synchronizeGenerations(people, self.id, self.id));
+  assert.throws(
+    () =>
+      synchronizeGenerations(
+        [self, elder, { ...descendant, generation: 53 }],
+        self.id,
+        self.id,
+      ),
+    /最多支持 100 代/,
+  );
 });
 
 test("partner replacement remains reciprocal and does not discard personal details", () => {

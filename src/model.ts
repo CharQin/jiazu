@@ -1,4 +1,9 @@
 import {
+  checkGenerationSpan,
+  firstGeneration,
+  lastGeneration,
+} from "./generations.ts";
+import {
   birthdayError,
   birthdayParts,
   completeBirthday,
@@ -170,7 +175,6 @@ export const branchInfo: Record<
   mother: { label: "妈妈这边", color: "#8b7ac3", light: "#f0ecfa" },
   other: { label: "其他亲人", color: "#c67e89", light: "#faecef" },
 };
-export const generationNames = ["祖辈", "父母辈", "同辈", "子女辈", "孙辈"];
 export const uid = () => crypto.randomUUID();
 export const today = () => {
   const d = new Date();
@@ -260,6 +264,12 @@ export function saveFamilyPerson(
       ? { relation: "", kind: "family" as const }
       : {}),
   };
+  if (isFriend(person) && person.friendOfId) {
+    const host = data.people.find(
+      (p) => p.id === person.friendOfId && !isFriend(p),
+    );
+    if (host) person.familyId = host.familyId;
+  }
   const people = synchronizeGenerations(
     upsertKinship(data.people, person, childIds),
     data.selfId,
@@ -365,8 +375,8 @@ export function validateData(value: unknown): FamilyData {
       !textFields.every((k) => typeof p[k] === "string") ||
       !["male", "female", "other"].includes(p.gender) ||
       !Number.isInteger(p.generation) ||
-      p.generation < 0 ||
-      p.generation > 4 ||
+      p.generation < firstGeneration ||
+      p.generation > lastGeneration ||
       !familyIds.has(p.familyId) ||
       !Array.isArray(p.tags) ||
       !p.tags.every((t) => typeof t === "string") ||
@@ -502,6 +512,9 @@ export function validateData(value: unknown): FamilyData {
     )
       throw new Error("父母或子女不能同时关联为伴侣");
   }
+  checkGenerationSpan(
+    d.people.filter((p) => !isFriend(p)).map((p) => p.generation),
+  );
   const done = new Set<string>(),
     stack = new Set<string>();
   function visit(id: string) {

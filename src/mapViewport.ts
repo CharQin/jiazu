@@ -68,3 +68,55 @@ export function fitMapView(
     y: top + height / 2 - ((bounds.top + bounds.bottom) / 2) * scale,
   };
 }
+
+export const maxMapScale = 2;
+
+export function centerMapView(
+  point: MapPoint,
+  scale: number,
+  viewport: { width: number; height: number },
+  tree: boolean,
+): MapView {
+  const center = {
+    x: (viewport.width + (tree ? 72 : 0)) / 2,
+    y: (viewport.height - 32) / 2,
+  };
+  return {
+    scale,
+    x: center.x - point.x * scale,
+    y: center.y - point.y * scale,
+  };
+}
+
+// Keep the same world point under the cursor or the moving midpoint of two fingers.
+export function zoomMapView(
+  view: MapView,
+  factor: number,
+  minScale: number,
+  from: MapPoint,
+  to = from,
+): MapView {
+  const scale = Math.max(minScale, Math.min(maxMapScale, view.scale * factor));
+  const ratio = scale / view.scale;
+  return {
+    scale,
+    x: to.x - (from.x - view.x) * ratio,
+    y: to.y - (from.y - view.y) * ratio,
+  };
+}
+
+// Let the user center every card, while keeping the viewport center inside
+// the finite tree canvas so a long swipe cannot get lost in empty space.
+export function confineTreeView(
+  view: MapView,
+  worldWidth: number,
+  viewportWidth: number,
+): MapView {
+  if (viewportWidth <= 0) return view;
+  const center = (viewportWidth + 72) / 2;
+  const x = Math.max(
+    center - worldWidth * view.scale,
+    Math.min(center, view.x),
+  );
+  return x === view.x ? view : { ...view, x };
+}
