@@ -6,8 +6,8 @@ const familyMember = (p: Person) => p.kind !== "friend";
 const byIdOrder = (a: Person, b: Person) => a.id.localeCompare(b.id);
 const birth = (p: Person) =>
   p.birthday ||
-  (p.birthdayParts?.year
-    ? `${p.birthdayParts.year}-${p.birthdayParts.month || "99"}-${p.birthdayParts.day || "99"}`
+  (p.birthdayParts?.year.length === 4
+    ? `${p.birthdayParts.year}-${(p.birthdayParts.month || "99").padStart(2, "0")}-${(p.birthdayParts.day || "99").padStart(2, "0")}`
     : "9999");
 const byAge = (a: Person, b: Person) =>
   birth(a).localeCompare(birth(b)) || byIdOrder(a, b);
@@ -160,37 +160,33 @@ export function automaticHouseholds(
   }
   const branches = deriveBranches(data);
   const oldFamilies = new Map(data.families.map((f) => [f.id, f]));
-  const oldAnchors = new Map<string, Person>();
-  for (const p of [...members].sort(
-    (a, b) => a.generation - b.generation || byAge(a, b),
-  ))
-    if (!oldAnchors.has(p.familyId)) oldAnchors.set(p.familyId, p);
   const selfFamily = assignment.get(data.selfId);
   const families = new Map<string, FamilyData["families"][number]>();
   const people = data.people.map((p) => {
     const host = !familyMember(p) ? byId.get(p.friendOfId ?? "") : undefined;
-    const fallback = !familyMember(p) ? oldAnchors.get(p.familyId) : undefined;
     const familyId =
       assignment.get(p.id) ??
-      assignment.get((host ?? fallback)?.id ?? "") ??
-      p.familyId;
+      assignment.get(host?.id ?? "") ??
+      (familyMember(p) ? p.familyId : "household:unassigned-friends");
     if (!families.has(familyId)) {
       const root = roots.get(familyId) ?? [];
       const sides = new Set(
         root.flatMap((m) => [...(branches.get(m.id) ?? [])]),
       );
       const branch: Branch =
-        familyId === selfFamily
-          ? "home"
-          : sides.has("father") && !sides.has("mother")
-            ? "father"
-            : sides.has("mother") && !sides.has("father")
-              ? "mother"
-              : sides.has("home")
-                ? "home"
-                : root.length
-                  ? "other"
-                  : (oldFamilies.get(p.familyId)?.branch ?? "other");
+        !familyMember(p) && !host
+          ? "other"
+          : familyId === selfFamily
+            ? "home"
+            : sides.has("father") && !sides.has("mother")
+              ? "father"
+              : sides.has("mother") && !sides.has("father")
+                ? "mother"
+                : sides.has("home")
+                  ? "home"
+                  : root.length
+                    ? "other"
+                    : (oldFamilies.get(p.familyId)?.branch ?? "other");
       families.set(familyId, { id: familyId, name: "", branch });
     }
     return p.familyId === familyId ? p : { ...p, familyId };

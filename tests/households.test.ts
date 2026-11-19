@@ -79,3 +79,23 @@ test("the network gives grandparents to the eldest child's family only, without 
   assert.equal(network.people.length, tree.people.length);
   assert.deepEqual(automaticHouseholds(network, true), network);
 });
+
+test("the network compares partial birthdays by calendar order when choosing the eldest child", () => {
+  for (const youngerBirth of [
+    { year: "1960", month: "11", day: "" },
+    { year: "1960", month: "", day: "" },
+    { year: "19", month: "1", day: "1" },
+  ]) {
+    const data = createDemo();
+    const dad = member(data, "dad"),
+      uncle = member(data, "uncle");
+    dad.birthday = "";
+    dad.birthdayParts = { year: "1960", month: "2", day: "" };
+    uncle.birthday = "";
+    uncle.birthdayParts = youngerBirth;
+    const network = automaticHouseholds(validateData(data), true);
+    for (const elder of ["grandpa", "grandma"])
+      assert.equal(home(network, elder), home(network, "dad"));
+    assert.notEqual(home(network, "grandpa"), home(network, "uncle"));
+  }
+});

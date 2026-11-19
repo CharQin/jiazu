@@ -831,7 +831,7 @@
   --gender-border: #dce2cd;
   --gender-ink: #65754e;
 }
-.person-node:not(.friend-bundle) {
+.person-node {
   flex-direction: column;
   align-items: stretch;
   justify-content: flex-start;
@@ -3643,128 +3643,15 @@
   background: #fff;
   color: var(--cluster-ink);
 }
-.person-node.friend-bundle {
-  --node-accent: #799fba;
-  gap: 7px;
-  padding: 9px 8px;
-  border-color: #bcd3df;
-  background: #f4faff;
-}
-.friend-bundle .friend-bundle-icon {
-  flex: 0 0 30px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  background: #dfedf5;
-  color: #648da7;
-  border-radius: 11px;
-}
-.friend-bundle strong {
-  color: #54758a;
-}
-.friend-bundle strong b {
+.friend-label {
+  display: inline-block;
+  padding-inline: 4px;
+  margin-inline-end: 3px;
+  border-radius: 4px;
+  background: #faffffb0;
+  color: #436179;
   font-size: 10px;
-  font-weight: 500;
-}
-.friend-bundle > svg {
-  flex-shrink: 0;
-  color: #86a2b5;
-  transition: transform 0.2s;
-}
-.friend-bundle[aria-expanded="true"] > svg {
-  transform: rotate(90deg);
-}
-.friends-panel {
-  position: absolute;
-  z-index: 5;
-  width: 280px;
-  max-width: calc(100% - 20px);
-  max-height: min(360px, calc(100% - 90px));
-  display: flex;
-  flex-direction: column;
-  padding: 15px;
-  border: 1px solid #d9e5ed;
-  border-radius: 17px;
-  box-shadow: 0 10px 40px #36495424;
-  background: #fffffff5;
-  backdrop-filter: blur(12px);
-  cursor: default;
-  touch-action: pan-y;
-  animation: sheet-in 0.2s ease;
-}
-.friends-panel header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #edf1f3;
-}
-.friends-panel header strong {
-  font-size: 13px;
-  color: #526c7b;
-}
-.friends-panel header small {
-  display: block;
-  font-size: 10px;
-  color: #8ba0ab;
-  margin-top: 4px;
-}
-.friends-panel header button {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
-  background: #f2f6f9;
-  color: #738b98;
-}
-.friends-list {
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  min-height: 0;
-  padding: 6px 0;
-}
-.friends-list > button {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 10px 2px;
-  text-align: left;
-}
-.friends-list > button > span {
-  flex: 1;
-  min-width: 0;
-}
-.friends-list strong {
-  font-size: 13px;
-  color: #536e7e;
-  overflow-wrap: anywhere;
-}
-.friends-list small {
-  display: block;
-  color: #8b9da6;
-  font-size: 10px;
-  margin-top: 4px;
-}
-.friends-list > button > svg {
-  color: #8da5b3;
-}
-.friends-list > p {
-  color: #8b9da6;
-  font-size: 12px;
-}
-.map-canvas.friends-open {
-  touch-action: pan-y;
-}
-.friend-panel-add {
-  display: block;
-  padding: 10px;
-  border-radius: 9px;
-  background: #edf5fb;
-  color: #64869c;
-  font-size: 12px;
-  flex-shrink: 0;
+  white-space: nowrap;
 }
 @media (max-width: 760px) {
   .map-route .topbar {

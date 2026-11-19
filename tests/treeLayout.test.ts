@@ -35,38 +35,51 @@ test("every generation occupies exactly one row, in elder-to-younger order", () 
     }
   }
 });
-test("any number of friends takes one slot beside its household", () => {
-  const data = createEmpty();
-  const owner = data.people[0];
-  data.people.push({
-    ...owner,
-    id: "friend-1",
-    kind: "friend",
-    friendOfId: owner.id,
-    generation: 0,
-  });
-  const first = makeGenerationLayout(data);
-  for (let i = 2; i <= 25; i++)
+test("friends each get a card beside their specific host, keeping partners adjacent", () => {
+  const data = createDemo();
+  const [me, wife] = data.people;
+  const kid = data.people.find((p) => p.id === "kid")!;
+  function addFriend(id: string, host: typeof me) {
     data.people.push({
-      ...owner,
-      id: `friend-${i}`,
+      ...host,
+      id,
       kind: "friend",
-      friendOfId: owner.id,
-      generation: 4,
+      friendOfId: host.id,
+      parentIds: [],
+      partnerId: "",
+      generation: 0,
     });
-  const many = makeGenerationLayout(data);
-  assert.deepEqual(many, first);
-  assert.equal(many.nodes.size, 1);
-  assert.equal(many.friendGroups.size, 1);
-  assert.deepEqual(
-    many.generations.map((r) => [r.generation, r.count]),
-    [[2, 1]],
+  }
+  addFriend("my-friend", me);
+  addFriend("my-other-friend", me);
+  addFriend("wifes-friend", wife);
+  addFriend("kids-friend", kid);
+  const layout = makeGenerationLayout(data);
+  const x = (id: string) => layout.nodes.get(id)!.x;
+  const y = (id: string) => layout.nodes.get(id)!.y;
+  assert.equal(layout.nodes.size, data.people.length);
+  assert.equal(
+    layout.generations.reduce((n, row) => n + row.count, 0),
+    data.people.length - 4,
   );
-  const bundle = many.friendGroups.get(owner.familyId)!;
-  assert.equal(bundle.x - many.nodes.get(owner.id)!.x, 208);
-  assert.equal(bundle.y, many.nodes.get(owner.id)!.y);
+  assert.equal(x("wife") - x("me"), 192);
+  assert.equal(x("me") - x("my-friend"), 208);
+  assert.equal(x("my-friend") - x("my-other-friend"), 208);
+  assert.equal(x("wifes-friend") - x("wife"), 208);
+  assert.equal(x("kids-friend") - x("kid"), 208);
+  assert.equal(y("my-friend"), y("me"));
+  assert.equal(y("wifes-friend"), y("wife"));
+  assert.equal(y("kids-friend"), y("kid"));
+  const kidFriend = data.people.find((p) => p.id === "kids-friend")!;
+  kidFriend.friendOfId = "dad";
+  const reassigned = makeGenerationLayout(data);
+  assert.equal(
+    reassigned.nodes.get("kids-friend")!.y,
+    reassigned.nodes.get("dad")!.y,
+  );
 });
-test("a household containing only friends still has a visible folded slot", () => {
+
+test("a legacy friend with no host has a visible independent card", () => {
   const data = createEmpty();
   data.families.push({ id: "other", name: "", branch: "other" });
   data.people.push({
@@ -77,11 +90,9 @@ test("a household containing only friends still has a visible folded slot", () =
     friendOfId: "",
   });
   const layout = makeGenerationLayout(data);
-  assert.ok(layout.friendGroups.has("other"));
-  assert.equal(layout.nodes.has("friend-only"), false);
-  assert.ok(
-    layout.groups.some((g) => g.familyId === "other" && g.friendAnchor),
-  );
+  assert.ok(layout.nodes.has("friend-only"));
+  assert.ok(!layout.groups.some((g) => g.familyId === "other"));
+  assert.equal(layout.nodes.get(data.selfId)!.x, layout.width / 2);
 });
 
 test("empty generations retain their own lane and cannot collapse two generations", () => {
@@ -327,19 +338,20 @@ test("a singleton with a linked parent follows its branch and an unlinked elder 
   data.people = data.people.filter((p) => p.id !== "kid");
   data.people.push(oldest, youngest, {
     ...oldest,
-    id: "folded-friend",
+    id: "elders-friend",
     kind: "friend",
     friendOfId: oldest.id,
   });
   oldest.familyId = "ancestor";
   data.people.at(-1)!.familyId = oldest.familyId;
   data.families.push({ id: oldest.familyId, name: "", branch: "father" });
-  const { nodes, friendGroups, width } = makeGenerationLayout(data);
+  const { nodes, width } = makeGenerationLayout(data);
   assert.equal(nodes.get(oldest.id)!.x, width / 2);
   assert.equal(nodes.get(youngest.id)!.x, nodes.get("m-cousin")!.x);
-  assert.ok(nodes.get("grandpa")!.x < width / 2);
+  assert.equal(nodes.get("grandpa")!.x, nodes.get(oldest.id)!.x);
+  assert.ok(nodes.get("grandpa")!.x < nodes.get("m-grandpa")!.x);
   assert.ok(nodes.get("m-cousin")!.x > width / 2);
-  assert.equal(friendGroups.get(oldest.familyId)!.x - width / 2, 208);
+  assert.equal(nodes.get("elders-friend")!.x - width / 2, 208);
 });
 
 test("all generations share the initial ten-card width until one row needs more room", () => {

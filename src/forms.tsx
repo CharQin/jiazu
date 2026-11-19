@@ -581,7 +581,9 @@ export function PersonForm({
       <div className="form-section-title">
         <span>家庭与辈分</span>
         <small>
-          {isFriend(draft) ? "朋友收纳在关联家人旁" : "家庭按亲属关系自动分组"}
+          {isFriend(draft)
+            ? "朋友卡片会显示在关联家人旁"
+            : "家庭按亲属关系自动分组"}
         </small>
       </div>
       <div className="form-grid">

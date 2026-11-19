@@ -12,10 +12,7 @@ import {
   Home,
   Scan,
   Hand,
-  UsersRound,
   UserRoundPlus,
-  ChevronRight,
-  X,
   Heart,
 } from "lucide-react";
 import { Avatar } from "./Avatar";
@@ -30,6 +27,7 @@ import {
 } from "./model";
 import { generationName } from "./generations";
 import { automaticHouseholds, householdPairs } from "./households";
+import { groupFriends, mapCardUnit } from "./mapFriends";
 import { deriveBranches } from "./kinship";
 import type { Branch, FamilyData, Person } from "./model";
 import { makeGenerationLayout } from "./treeLayout";
@@ -63,7 +61,6 @@ const cardHalfHeight = personCardHeight / 2;
 const networkRowSpacing = personCardHeight + 16;
 interface Layout {
   nodes: Map<string, Position>;
-  friendGroups: Map<string, Position>;
   groups: {
     id: string;
     name: string;
@@ -84,10 +81,10 @@ function makeLayout(
   tree: boolean,
 ): Layout {
   const nodes = new Map<string, Position>();
-  const friendGroups = new Map<string, Position>();
   if (tree) return makeGenerationLayout(data);
+  const { byHost, unassigned } = groupFriends(data.people);
   const visibleFamilies = data.families.filter((f) =>
-    data.people.some((p) => p.familyId === f.id),
+    data.people.some((p) => p.familyId === f.id && !isFriend(p)),
   );
   const selfFamily = data.people.find((p) => p.id === data.selfId)?.familyId;
   visibleFamilies.sort(
@@ -95,46 +92,68 @@ function makeLayout(
   );
   const ordering = kinshipOrdering(data);
   const partners = householdPairs(data.people);
-  const networkSlots = new Map(
-    visibleFamilies.map((f) => {
-      const members = data.people.filter(
-        (p) => p.familyId === f.id && !isFriend(p),
+  const clusters: {
+    family?: FamilyData["families"][number];
+    rows: ReturnType<typeof networkRows>;
+  }[] = visibleFamilies.map((f) => {
+    const members = data.people.filter(
+      (p) => p.familyId === f.id && !isFriend(p),
+    );
+    const placed = new Set<string>(),
+      units: Person[][] = [];
+    for (const p of [...members].sort(ordering.compare)) {
+      if (placed.has(p.id)) continue;
+      placed.add(p.id);
+      const partner = members.find(
+        (m) => !placed.has(m.id) && m.id === partners.get(p.id),
       );
-      const placed = new Set<string>(),
-        units: Person[][] = [];
-      for (const p of [...members].sort(ordering.compare)) {
-        if (placed.has(p.id)) continue;
-        placed.add(p.id);
-        const partner = members.find(
-          (m) => !placed.has(m.id) && m.id === partners.get(p.id),
-        );
-        if (partner) {
-          placed.add(partner.id);
-          units.push([p, partner].sort(ordering.pair));
-        } else units.push([p]);
-      }
-      units.sort(
-        (a, b) =>
-          a[0].generation - b[0].generation || ordering.compareUnits(a, b),
-      );
-      const slots: (Person | null | undefined)[] = [];
-      for (const unit of units) {
-        if (unit.length === 2 && slots.length % 2) slots.push(null);
-        slots.push(...unit);
-      }
-      if (data.people.some((p) => p.familyId === f.id && isFriend(p)))
-        slots.push(undefined);
-      return [f.id, slots] as const;
-    }),
-  );
-  const n = visibleFamilies.length;
+      if (partner) {
+        placed.add(partner.id);
+        units.push([p, partner].sort(ordering.pair));
+      } else units.push([p]);
+    }
+    units.sort(
+      (a, b) =>
+        a[0].generation - b[0].generation || ordering.compareUnits(a, b),
+    );
+    return { family: f, rows: networkRows(units) };
+  });
+  if (unassigned.length)
+    clusters.push({
+      family: undefined,
+      rows: networkRows(unassigned.map((p) => [p])),
+    });
+  function networkRows(units: Person[][]) {
+    const rows: ReturnType<typeof mapCardUnit>[][] = [];
+    for (const unit of units) {
+      const cards = mapCardUnit(unit, byHost);
+      const previous = rows.at(-1);
+      if (
+        cards.slots.length === 1 &&
+        previous?.length === 1 &&
+        previous[0].slots.length === 1
+      )
+        previous.push(cards);
+      else rows.push([cards]);
+    }
+    return rows;
+  }
+  const n = clusters.length;
   const maxRows = Math.max(
     2,
-    ...visibleFamilies.map((f) =>
-      Math.ceil(networkSlots.get(f.id)!.length / 2),
-    ),
+    ...clusters.map((cluster) => cluster.rows.length),
   );
-  const groupWidth = personCardWidth + relativeSpacing + 40;
+  const groupWidth =
+    Math.max(
+      personCardWidth + relativeSpacing,
+      ...clusters.flatMap(({ rows }) =>
+        rows.map(
+          (row) =>
+            row.reduce((w, unit) => w + unit.width, 0) +
+            (row.length - 1) * (relativeSpacing - personCardWidth),
+        ),
+      ),
+    ) + 40;
   const spacing = Math.max(groupWidth + 40, maxRows * networkRowSpacing + 110);
   const clusterScale = Math.max(
     1,
@@ -149,9 +168,9 @@ function makeLayout(
   }
   const width =
     n === 1
-      ? 430
+      ? Math.max(430, groupWidth + 40)
       : n === 2
-        ? 450
+        ? Math.max(450, groupWidth + 40)
         : n <= 7
           ? 1110 * clusterScale
           : ringCount * spacing * 2 + 380;
@@ -165,11 +184,11 @@ function makeLayout(
           : width;
   const anchors: Position[] =
     n === 1
-      ? [{ x: 215, y: height / 2 }]
+      ? [{ x: width / 2, y: height / 2 }]
       : n === 2
         ? [
-            { x: 225, y: height * 0.73 },
-            { x: 225, y: height * 0.25 },
+            { x: width / 2, y: height * 0.75 },
+            { x: width / 2, y: height * 0.25 },
           ]
         : [
             { x: 550, y: 452 },
@@ -183,11 +202,8 @@ function makeLayout(
             x: point.x * clusterScale,
             y: point.y * clusterScale,
           }));
-  const groups = visibleFamilies.map((f, i) => {
-    const ordered = networkSlots.get(f.id)!;
-    const count = ordered.length;
-    const cols = 2;
-    const groupHeight = Math.ceil(count / cols) * networkRowSpacing + 72;
+  const groups = clusters.flatMap(({ family, rows }, i) => {
+    const groupHeight = rows.length * networkRowSpacing + 72;
     let ring = 1,
       indexInRing = i - 1;
     while (indexInRing >= ring * 6) {
@@ -204,40 +220,34 @@ function makeLayout(
               x: width / 2 + Math.cos(angle) * ring * spacing,
               y: height / 2 + Math.sin(angle) * ring * spacing,
             };
-    ordered.forEach((p, j) => {
-      if (p === null) return;
-      const rowCount = Math.min(cols, count - Math.floor(j / cols) * cols);
-      const first = ordered[Math.floor(j / cols) * cols],
-        second = ordered[Math.floor(j / cols) * cols + 1];
-      const spacing =
-        first &&
-        second &&
-        (first.partnerId === second.id || second.partnerId === first.id)
-          ? partnerSpacing
-          : relativeSpacing;
-      const position = {
-        x: anchor.x + ((j % cols) - (rowCount - 1) / 2) * spacing,
-        y:
-          anchor.y +
-          Math.floor(j / cols) * networkRowSpacing -
-          ((Math.ceil(count / cols) - 1) * networkRowSpacing) / 2 +
-          8,
-      };
-      if (p) nodes.set(p.id, position);
-      else friendGroups.set(f.id, position);
+    rows.forEach((row, index) => {
+      const gap = relativeSpacing - personCardWidth;
+      const rowWidth =
+        row.reduce((w, unit) => w + unit.width, 0) + (row.length - 1) * gap;
+      let left = anchor.x - rowWidth / 2;
+      const y =
+        anchor.y + (index - (rows.length - 1) / 2) * networkRowSpacing + 8;
+      for (const unit of row) {
+        for (const slot of unit.slots)
+          nodes.set(slot.id, { x: left + unit.width / 2 + slot.offset, y });
+        left += unit.width + gap;
+      }
     });
-    return {
-      ...f,
-      name: familyName(f, data.people),
-      familyId: f.id,
-      friendAnchor: true,
-      x: anchor.x,
-      y: anchor.y - 12,
-      width: groupWidth,
-      height: groupHeight,
-    };
+    if (!family) return [];
+    return [
+      {
+        ...family,
+        name: familyName(family, data.people),
+        familyId: family.id,
+        friendAnchor: true,
+        x: anchor.x,
+        y: anchor.y - 12,
+        width: groupWidth,
+        height: groupHeight,
+      },
+    ];
   });
-  return { nodes, friendGroups, groups, generations: [], width, height };
+  return { nodes, groups, generations: [], width, height };
 }
 export function FamilyMap({
   data,
@@ -259,11 +269,7 @@ export function FamilyMap({
   onSelect: (p: Person) => void;
   focusId: string;
   focusVersion: number;
-  onAddPerson: (
-    familyId: string,
-    kind: "family" | "friend",
-    friendOfId?: string,
-  ) => void;
+  onAddPerson: (familyId: string, kind: "family") => void;
   onReorder: (ids: string[]) => void;
 }) {
   const { selfId } = data;
@@ -281,14 +287,14 @@ export function FamilyMap({
     () => makeLayout({ people, families: mapData.families, selfId }, tree),
     [people, mapData.families, selfId, tree],
   );
-  function addToGroup(familyId: string, kind: "family" | "friend") {
+  function addToGroup(familyId: string) {
     const host = people.find((p) => p.familyId === familyId && !isFriend(p));
     const originalFamily =
       data.people.find((p) => p.id === host?.id)?.familyId ?? familyId;
-    onAddPerson(originalFamily, kind, kind === "friend" ? host?.id : undefined);
+    onAddPerson(originalFamily, "family");
   }
   const connections = useMemo(
-    () => routeFamilyMap(data.people, layout.nodes, tree, layout.friendGroups),
+    () => routeFamilyMap(data.people, layout.nodes, tree),
     [data.people, layout, tree],
   );
   const linePoints = useMemo(
@@ -338,10 +344,6 @@ export function FamilyMap({
     x: number;
     y: number;
   } | null>(null);
-  const [expandedFamily, setExpandedFamily] = useState(() => {
-    const focus = mapData.people.find((p) => p.id === focusId);
-    return focus && isFriend(focus) ? focus.familyId : "";
-  });
   const pointers = useRef(new Map<number, Position>());
   const gesture = useRef({ x: 0, y: 0, moved: false });
   const clickGuard = useRef(0);
@@ -371,6 +373,10 @@ export function FamilyMap({
       include(g.x - g.width / 2, g.y - g.height / 2);
       include(g.x + g.width / 2, g.y + g.height / 2);
     }
+    for (const p of layout.nodes.values()) {
+      include(p.x - cardHalfWidth, p.y - cardHalfHeight);
+      include(p.x + cardHalfWidth, p.y + cardHalfHeight);
+    }
     for (const p of linePoints) include(p.x, p.y);
     if (!Number.isFinite(left))
       return { left: 0, right: layout.width, top: 0, bottom: layout.height };
@@ -381,10 +387,7 @@ export function FamilyMap({
       bottom: bottom + 8,
     };
   }, [layout, linePoints]);
-  const focused = mapData.people.find((p) => p.id === focusId);
-  const friendFocus = focused && isFriend(focused) ? focused.familyId : "";
-  const focusPoint =
-    layout.nodes.get(focusId) ?? layout.friendGroups.get(friendFocus);
+  const focusPoint = layout.nodes.get(focusId);
   const fit = useCallback(
     (
       mode: "full" | "self" | "focus" | "auto",
@@ -410,10 +413,6 @@ export function FamilyMap({
         setView(full);
       else if (mode === "focus" && focusPoint)
         setView((view) => {
-          const target =
-            focused && isFriend(focused)
-              ? { x: focusPoint.x, y: focusPoint.y + 100 }
-              : focusPoint;
           const readableScale = keepScale
             ? Math.max(defaultScale, view.scale)
             : defaultScale;
@@ -425,7 +424,7 @@ export function FamilyMap({
             ),
           );
           return centerMapView(
-            target,
+            focusPoint,
             Math.min(cardFits, readableScale),
             viewport,
             tree,
@@ -446,7 +445,7 @@ export function FamilyMap({
           ),
         );
     },
-    [bounds, focusPoint, focused, layout, selfId, tree],
+    [bounds, focusPoint, layout, selfId, tree],
   );
   useLayoutEffect(() => {
     const el = container.current;
@@ -467,25 +466,15 @@ export function FamilyMap({
     measure();
     if (newFocus || newContext) {
       viewMode.current = newFocus ? "focus" : "auto";
-      setExpandedFamily(newFocus ? friendFocus : "");
       fit(viewMode.current, viewport, !newContext);
     } else if (before.layout !== layout && !sort.current) {
-      const points = (map: Layout) =>
-        new Map([
-          ...[...map.nodes].map(
-            ([id, point]) => [`person:${id}`, point] as const,
-          ),
-          ...[...map.friendGroups].map(
-            ([id, point]) => [`friends:${id}`, point] as const,
-          ),
-        ]);
       // Saving or deleting data should keep the viewed branch in place.
       viewMode.current = "manual";
       setView((v) => {
         const retained = retainMapView(
           v,
-          points(before.layout),
-          points(layout),
+          before.layout.nodes,
+          layout.nodes,
           viewport,
           tree,
         );
@@ -514,23 +503,12 @@ export function FamilyMap({
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [
-    bounds,
-    fit,
-    focusPoint,
-    friendFocus,
-    focusVersion,
-    layout,
-    selfId,
-    tree,
-  ]);
+  }, [bounds, fit, focusPoint, focusVersion, layout, selfId, tree]);
   const world = useRef<HTMLDivElement>(null);
   const generationLabels = useRef<HTMLDivElement>(null);
-  const friendsPanel = useRef<HTMLDivElement>(null);
   const liveView = useRef<MapView>(view);
   const motionFrame = useRef(0);
   const gestureRect = useRef({ left: 0, top: 0 });
-  const panelPoint = layout.friendGroups.get(expandedFamily);
   // Pan and pinch paint only the moving layer. Commit React state at the end
   // so moving one finger does not reconcile every person and connection.
   useLayoutEffect(() => {
@@ -549,10 +527,6 @@ export function FamilyMap({
         value
       )
         generationLabels.current.style.setProperty("--label-scale", value);
-    }
-    if (friendsPanel.current && panelPoint) {
-      friendsPanel.current.style.left = `clamp(10px, ${x + panelPoint.x * scale + 25}px, calc(100% - 290px))`;
-      friendsPanel.current.style.top = `clamp(42px, ${y + panelPoint.y * scale - 30}px, calc(100% - 280px))`;
     }
   }
   function moveMap(next: MapView) {
@@ -590,7 +564,6 @@ export function FamilyMap({
     const el = container.current;
     if (!el) return;
     const wheel = (e: WheelEvent) => {
-      if ((e.target as HTMLElement).closest(".friends-panel")) return;
       e.preventDefault();
       const r = el.getBoundingClientRect();
       wheelZoom(Math.exp(-e.deltaY * 0.002), {
@@ -631,11 +604,7 @@ export function FamilyMap({
   }
   function pointerDown(e: ReactPointerEvent) {
     if (e.button !== 0) return;
-    if (
-      (e.target as HTMLElement).closest(
-        ".map-controls, .friends-panel, .cluster-add-friend, .sibling-links",
-      )
-    )
+    if ((e.target as HTMLElement).closest(".map-controls, .cluster-add-friend"))
       return;
     if (pointers.current.size >= 2) return;
     if (!pointers.current.size)
@@ -644,7 +613,7 @@ export function FamilyMap({
     cancelPress();
     if (pointers.current.size > 1 && sort.current) cancelSort();
     const node = (e.target as HTMLElement).closest<HTMLElement>(
-      ".person-node[data-person-id]",
+      ".person-node[data-person-id]:not(.friend-node)",
     );
     if (tree && node && pointers.current.size === 1) {
       const id = node.dataset.personId!;
@@ -811,7 +780,7 @@ export function FamilyMap({
   );
   return (
     <div
-      className={`map-canvas ${tree ? "generation-tree" : ""} ${dragging ? "is-dragging" : ""} ${expandedFamily ? "friends-open" : ""} ${view.instant ? "preserve-map-view" : ""}`}
+      className={`map-canvas ${tree ? "generation-tree" : ""} ${dragging ? "is-dragging" : ""} ${view.instant ? "preserve-map-view" : ""}`}
       style={
         {
           "--person-card-width": `${personCardWidth}px`,
@@ -893,7 +862,7 @@ export function FamilyMap({
                   className="cluster-add-friend"
                   aria-label={`为${g.name || "这个家庭"}添加家人或朋友`}
                   title="添加家人或朋友"
-                  onClick={() => addToGroup(g.familyId, "family")}
+                  onClick={() => addToGroup(g.familyId)}
                 >
                   <UserRoundPlus size={13} />
                 </button>
@@ -970,9 +939,9 @@ export function FamilyMap({
                   ),
                 )
                 .join("、")}的兄弟姐妹连线`}
-              onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
+                if (Date.now() <= clickGuard.current) return;
                 setActiveSibling((current) =>
                   current === group.id ? "" : group.id,
                 );
@@ -1015,191 +984,93 @@ export function FamilyMap({
             }}
           />
         )}
-        {data.people
-          .filter((p) => !isFriend(p))
-          .map((p) => {
-            const point = layout.nodes.get(p.id);
-            if (!point) return null;
-            const sides = branches.get(p.id);
-            const branch =
-              (filter !== "all" && sides?.has(filter)
-                ? filter
-                : sides?.values().next().value) ?? "other";
-            const years = ageLabel(p);
-            return (
-              <button
-                key={p.id}
-                data-person-id={p.id}
-                className={`person-node gender-${p.gender} ${p.id === sortingId ? "sorting-node" : ""} ${p.deceased ? "deceased-node" : ""} ${p.id === data.selfId ? "self-node" : ""} ${p.id === selectedId ? "selected-node" : ""} ${!visible(p) ? "dimmed" : ""}`}
-                style={
-                  {
-                    left: point.x - cardHalfWidth,
-                    top: point.y - cardHalfHeight,
-                    "--node-accent": branchInfo[branch].color,
-                  } as CSSProperties
-                }
-                onContextMenu={(e) => e.preventDefault()}
-                onDragStart={(e) => e.preventDefault()}
-                onKeyDown={(e) => {
-                  if (
-                    !tree ||
-                    !e.altKey ||
-                    !["ArrowLeft", "ArrowRight"].includes(e.key)
-                  )
-                    return;
-                  e.preventDefault();
-                  const ids = rowOrder(p.id),
-                    index = ids.indexOf(p.id),
-                    direction = e.key === "ArrowLeft" ? -1 : 1;
-                  const target = index + direction;
-                  if (ids[target]) {
-                    viewMode.current = "manual";
-                    onReorder(
-                      reorderPersonIds(
-                        data.people,
-                        ids,
-                        p.id,
-                        ids[target],
-                        direction > 0,
-                      ),
-                    );
-                  }
-                }}
-                aria-description={
-                  tree
-                    ? "长按后左右拖动排序；键盘使用 Alt 加左右方向键"
-                    : undefined
-                }
-                onClick={() => {
-                  if (Date.now() > clickGuard.current) onSelect(p);
-                }}
-                aria-label={`查看${personName(p, data.selfId)}${p.id !== data.selfId && p.relation ? `，${p.relation}` : ""}${p.deceased ? "，已离世" : years ? `，${years}` : ""}${p.gender === "male" ? "，男" : p.gender === "female" ? "，女" : ""}`}
-              >
-                <span className="node-heading">
-                  <Avatar person={p} size={64} shape="rounded" />
-                  <span className="node-identity">
-                    <strong title={personName(p, data.selfId)}>
-                      {personName(p, data.selfId)}
-                    </strong>
-                    {p.deceased ? (
-                      <Memorial />
-                    ) : (
-                      years && <em className="node-age">{years}</em>
-                    )}
-                  </span>
-                </span>
-                {p.id !== data.selfId && p.relation && (
-                  <span className="node-relation">{p.relation}</span>
-                )}
-              </button>
-            );
-          })}
-        {[...layout.friendGroups].map(([familyId, point]) => {
-          const friends = people.filter(
-            (p) => isFriend(p) && p.familyId === familyId,
-          );
-          const family = mapData.families.find((f) => f.id === familyId)!;
-          const matching = friends.filter(visible).length;
+        {people.map((p) => {
+          const point = layout.nodes.get(p.id);
+          if (!point) return null;
+          const sides = branches.get(p.id);
+          const branch =
+            (filter !== "all" && sides?.has(filter)
+              ? filter
+              : sides?.values().next().value) ?? "other";
+          const years = ageLabel(p);
+          const friend = isFriend(p);
           return (
             <button
-              key={familyId}
-              className={`person-node friend-bundle ${!matching ? "dimmed" : ""}`}
-              style={{
-                left: point.x - cardHalfWidth,
-                top: point.y - cardHalfHeight,
-              }}
-              aria-label={`展开${familyName(family, people)}的朋友，共${friends.length}人`}
-              aria-expanded={expandedFamily === familyId}
-              onClick={() => {
-                if (Date.now() > clickGuard.current)
-                  setExpandedFamily(
-                    expandedFamily === familyId ? "" : familyId,
+              key={p.id}
+              data-person-id={p.id}
+              className={`person-node gender-${p.gender} ${friend ? "friend-node" : ""} ${p.id === sortingId ? "sorting-node" : ""} ${p.deceased ? "deceased-node" : ""} ${p.id === data.selfId ? "self-node" : ""} ${p.id === selectedId ? "selected-node" : ""} ${!visible(p) ? "dimmed" : ""}`}
+              style={
+                {
+                  left: point.x - cardHalfWidth,
+                  top: point.y - cardHalfHeight,
+                  "--node-accent": branchInfo[branch].color,
+                } as CSSProperties
+              }
+              onContextMenu={(e) => e.preventDefault()}
+              onDragStart={(e) => e.preventDefault()}
+              onKeyDown={(e) => {
+                if (
+                  !tree ||
+                  friend ||
+                  !e.altKey ||
+                  !["ArrowLeft", "ArrowRight"].includes(e.key)
+                )
+                  return;
+                e.preventDefault();
+                const ids = rowOrder(p.id),
+                  index = ids.indexOf(p.id),
+                  direction = e.key === "ArrowLeft" ? -1 : 1;
+                const target = index + direction;
+                if (ids[target]) {
+                  viewMode.current = "manual";
+                  onReorder(
+                    reorderPersonIds(
+                      data.people,
+                      ids,
+                      p.id,
+                      ids[target],
+                      direction > 0,
+                    ),
                   );
+                }
               }}
+              aria-description={
+                tree && !friend
+                  ? "长按后左右拖动排序；键盘使用 Alt 加左右方向键"
+                  : undefined
+              }
+              onClick={() => {
+                if (Date.now() > clickGuard.current) onSelect(p);
+              }}
+              aria-label={`查看${personName(p, data.selfId)}${friend ? "，朋友" : ""}${p.id !== data.selfId && p.relation ? `，${p.relation}` : ""}${p.deceased ? "，已离世" : years ? `，${years}` : ""}${p.gender === "male" ? "，男" : p.gender === "female" ? "，女" : ""}`}
             >
-              <span className="friend-bundle-icon">
-                <UsersRound size={22} />
+              <span className="node-heading">
+                <Avatar person={p} size={64} shape="rounded" />
+                <span className="node-identity">
+                  <strong title={personName(p, data.selfId)}>
+                    {personName(p, data.selfId)}
+                  </strong>
+                  {p.deceased ? (
+                    <Memorial />
+                  ) : (
+                    years && <em className="node-age">{years}</em>
+                  )}
+                </span>
               </span>
-              <span>
-                <strong>
-                  朋友 <b>{friends.length}</b>
-                </strong>
-                <small>
-                  {expandedFamily === familyId ? "点击收起" : "点击展开"}
-                </small>
-              </span>
-              <ChevronRight size={13} />
+              {(friend || (p.id !== data.selfId && p.relation)) && (
+                <span className="node-relation">
+                  {friend && <span className="friend-label">朋友</span>}
+                  {p.relation && p.relation !== "朋友"
+                    ? p.relation
+                    : !friend
+                      ? p.relation
+                      : ""}
+                </span>
+              )}
             </button>
           );
         })}
       </div>
-      {expandedFamily &&
-        layout.friendGroups.has(expandedFamily) &&
-        (() => {
-          const point = layout.friendGroups.get(expandedFamily)!;
-          const family = mapData.families.find((f) => f.id === expandedFamily)!;
-          const friends = people.filter(
-            (p) => isFriend(p) && p.familyId === expandedFamily,
-          );
-          return (
-            <div
-              className="friends-panel"
-              ref={friendsPanel}
-              style={{
-                left: `clamp(10px, ${view.x + point.x * view.scale + 25}px, calc(100% - 290px))`,
-                top: `clamp(42px, ${view.y + point.y * view.scale - 30}px, calc(100% - 280px))`,
-              }}
-              role="region"
-              aria-label="家庭朋友列表"
-            >
-              <header>
-                <div>
-                  <strong>{familyName(family, people)}</strong>
-                  <small>{friends.length} 位朋友</small>
-                </div>
-                <button
-                  aria-label="收起朋友"
-                  onClick={() => setExpandedFamily("")}
-                >
-                  <X size={16} />
-                </button>
-              </header>
-              <div className="friends-list">
-                {friends.filter(visible).map((p) => (
-                  <button
-                    key={p.id}
-                    onClick={() => {
-                      setExpandedFamily("");
-                      onSelect(p);
-                    }}
-                  >
-                    <Avatar person={p} size={34} />
-                    <span>
-                      <strong>{personName(p)}</strong>
-                      <small>
-                        {p.friendOfId
-                          ? `${personName(data.people.find((m) => m.id === p.friendOfId) ?? p)}的朋友`
-                          : "家庭朋友"}
-                      </small>
-                    </span>
-                    <ChevronRight size={14} />
-                  </button>
-                ))}
-                {!friends.some(visible) && <p>当前筛选没有匹配的朋友</p>}
-              </div>
-              <button
-                className="friend-panel-add"
-                onClick={() => {
-                  setExpandedFamily("");
-                  addToGroup(expandedFamily, "friend");
-                }}
-              >
-                <UserRoundPlus size={16} />
-                添加朋友
-              </button>
-            </div>
-          );
-        })()}
       {tree && (
         <div
           className={`generation-axis ${view.scale < 0.4 ? "compact-axis" : ""} ${view.scale < 0.2 ? "tiny-axis" : ""}`}
@@ -1256,7 +1127,6 @@ export function FamilyMap({
           aria-label="查看全图"
           onClick={() => {
             viewMode.current = "full";
-            setExpandedFamily("");
             if (container.current)
               fit("full", container.current.getBoundingClientRect());
           }}
@@ -1268,7 +1138,6 @@ export function FamilyMap({
           aria-label="回到我"
           onClick={() => {
             viewMode.current = "self";
-            setExpandedFamily("");
             if (container.current)
               fit("self", container.current.getBoundingClientRect());
           }}

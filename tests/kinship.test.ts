@@ -255,10 +255,7 @@ test("in-law ancestry does not leak across branches; friends inherit the host's 
   const branches = deriveBranches(data);
   assert.deepEqual([...branches.get(relative.id)!], ["other"]);
   assert.deepEqual([...branches.get("dad-friend")!], ["father"]);
-  assert.deepEqual([...branches.get("family-friend")!].sort(), [
-    "father",
-    "mother",
-  ]);
+  assert.deepEqual([...branches.get("family-friend")!], ["other"]);
 });
 
 test("disconnected parents fall back to their manually chosen family branch", () => {

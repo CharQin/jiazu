@@ -315,7 +315,7 @@ export default function App() {
       editingPerson
         ? "资料已更新"
         : isFriend(person)
-          ? "朋友已添加，点击家庭旁的朋友卡片查看"
+          ? "朋友已添加"
           : "成员已添加",
     );
   }
@@ -1273,7 +1273,7 @@ export default function App() {
                     <br />
                     每一种关系，都值得被记住。
                   </p>
-                  <span className="version-tag">家族 1.9.4 · 离线版</span>
+                  <span className="version-tag">家族 1.9.5 · 离线版</span>
                   <div>
                     <CheckCheck size={16} />
                     {saveStatus === "saved"
@@ -1357,7 +1357,7 @@ export default function App() {
                   ? "编辑我的资料"
                   : "编辑家人资料"
               : personDefaults.kind === "friend"
-                ? "添加家庭朋友"
+                ? "添加朋友"
                 : "添加一位家人"
           }
           onClose={() => setModal(null)}

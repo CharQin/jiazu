@@ -1,3 +1,4 @@
+import { groupFriends, mapCardUnit } from "./mapFriends.ts";
 import { householdPairs } from "./households.ts";
 import { selfGeneration } from "./generations.ts";
 import type { FamilyData, Person } from "./model";
@@ -5,15 +6,12 @@ import { isFriend, familyName } from "./model.ts";
 import { siblingGroups } from "./familyRelations.ts";
 import { kinshipOrdering } from "./kinshipOrdering.ts";
 import {
-  friendSpacing,
   generationSpacing,
   householdHeight,
-  partnerSpacing,
   personCardWidth,
   relativeSpacing,
 } from "./mapGeometry.ts";
 
-const halfW = personCardWidth / 2;
 const canvasPadding = 40;
 const initialSlots = 10;
 const initialInnerWidth =
@@ -32,7 +30,7 @@ interface Unit {
 
 // Pool neighbouring conflicts to share displacement on both sides, rather than
 // pushing every new card to the right. This is a least-squares spacing projection.
-function place(row: Unit[], targets: number[]) {
+function place(row: Unit[], targets: number[], anchored?: boolean[]) {
   const offsets: number[] = [];
   row.forEach((unit, i) => {
     offsets[i] = i
@@ -42,25 +40,46 @@ function place(row: Unit[], targets: number[]) {
         personCardWidth
       : 0;
   });
-  const pools: { start: number; end: number; sum: number; count: number }[] =
-    [];
+  const pools: {
+    start: number;
+    end: number;
+    sum: number;
+    count: number;
+    anchorSum: number;
+    anchorCount: number;
+  }[] = [];
+  const mean = (pool: (typeof pools)[number]) =>
+    pool.anchorCount
+      ? pool.anchorSum / pool.anchorCount
+      : pool.sum / pool.count;
   targets.forEach((target, i) => {
-    pools.push({ start: i, end: i, sum: target - offsets[i], count: 1 });
+    const value = target - offsets[i];
+    const anchor = anchored?.[i] ?? true;
+    pools.push({
+      start: i,
+      end: i,
+      sum: value,
+      count: 1,
+      anchorSum: anchor ? value : 0,
+      anchorCount: anchor ? 1 : 0,
+    });
     while (pools.length > 1) {
       const a = pools.at(-2)!,
         b = pools.at(-1)!;
-      if (a.sum / a.count <= b.sum / b.count) break;
+      if (mean(a) <= mean(b)) break;
       pools.splice(-2, 2, {
         start: a.start,
         end: b.end,
         sum: a.sum + b.sum,
         count: a.count + b.count,
+        anchorSum: a.anchorSum + b.anchorSum,
+        anchorCount: a.anchorCount + b.anchorCount,
       });
     }
   });
   pools.forEach((pool) => {
     for (let i = pool.start; i <= pool.end; i++)
-      row[i].x = pool.sum / pool.count + offsets[i];
+      row[i].x = mean(pool) + offsets[i];
   });
 }
 
@@ -72,29 +91,13 @@ export function makeGenerationLayout(
 ) {
   const relatives = data.people.filter((p) => !isFriend(p));
   const ordering = kinshipOrdering(data);
-  const eldestInFamily = new Map<string, number>();
-  for (const p of relatives) {
-    const previous = eldestInFamily.get(p.familyId);
-    if (previous === undefined || p.generation < previous)
-      eldestInFamily.set(p.familyId, p.generation);
-  }
-  const friendGenerations = new Map(
-    [...new Set(data.people.filter(isFriend).map((p) => p.familyId))].map(
-      (id) => [
-        id,
-        eldestInFamily.get(id) ??
-          (relatives.length ? relatives[0].generation : selfGeneration),
-      ],
-    ),
-  );
-  const first = Math.min(
-    ...relatives.map((p) => p.generation),
-    ...friendGenerations.values(),
-  );
-  const last = Math.max(
-    ...relatives.map((p) => p.generation),
-    ...friendGenerations.values(),
-  );
+  const { byHost, unassigned } = groupFriends(data.people);
+  const referenceGeneration =
+    relatives.find((p) => p.id === data.selfId)?.generation ?? selfGeneration;
+  const layers = relatives.map((p) => p.generation);
+  if (unassigned.length) layers.push(referenceGeneration);
+  const first = Math.min(...layers);
+  const last = Math.max(...layers);
   const generations: GenerationRow[] = [];
   const rows: Unit[][] = [];
   const owners = new Map<string, { unit: Unit; offset: number }>();
@@ -115,40 +118,13 @@ export function makeGenerationLayout(
       row.push({
         people: members,
         x: 0,
-        width: personCardWidth + (partner ? partnerSpacing : 0),
-        slots: members.map((m, i) => ({
-          id: m.id,
-          familyId: m.familyId,
-          friend: false,
-          offset: partner ? (i - 0.5) * partnerSpacing : 0,
-        })),
+        ...mapCardUnit(members, byHost),
       });
     }
     row.sort((a, b) => ordering.compareUnits(a.people, b.people));
-    for (const [familyId, friendGeneration] of friendGenerations) {
-      if (friendGeneration !== generation) continue;
-      const owner = row.findLast((u) =>
-        u.people.some((p) => p.familyId === familyId),
-      );
-      if (owner) {
-        owner.slots.forEach((s) => {
-          s.offset -= friendSpacing / 2;
-        });
-        owner.slots.push({
-          id: familyId,
-          familyId,
-          friend: true,
-          offset: owner.width / 2 - halfW + friendSpacing / 2,
-        });
-        owner.width += friendSpacing;
-      } else
-        row.push({
-          people: [],
-          slots: [{ id: familyId, familyId, friend: true, offset: 0 }],
-          x: 0,
-          width: personCardWidth,
-        });
-    }
+    if (generation === referenceGeneration)
+      for (const friend of unassigned)
+        row.push({ people: [], x: 0, ...mapCardUnit([friend], byHost) });
     const total = row.reduce(
       (sum, u) => sum + u.width + relativeSpacing - personCardWidth,
       -(relativeSpacing - personCardWidth),
@@ -263,16 +239,42 @@ export function makeGenerationLayout(
     );
   }
   function sortRow(i: number, target: (u: Unit) => number) {
-    if (ordering.manualRows.has(generations[i].generation)) return;
     const row = rows[i];
     const targets = new Map(row.map((u) => [u, target(u)]));
-    row.sort(
-      (a, b) =>
-        targets.get(a)! - targets.get(b)! ||
-        (a.people.length && b.people.length
-          ? ordering.compareUnits(a.people, b.people)
-          : 0),
+    const compare = (a: Unit, b: Unit) =>
+      targets.get(a)! - targets.get(b)! ||
+      (a.people.length && b.people.length
+        ? ordering.compareUnits(a.people, b.people)
+        : 0);
+    if (!ordering.manualRows.has(generations[i].generation)) {
+      row.sort(compare);
+      return;
+    }
+    // Keep the saved relative order, but insert new units at their actual
+    // parental branch. A saved row must not lock new children to rank-based slots.
+    const saved = row.filter((u) =>
+      u.people.some((p) => p.layoutOrder !== undefined),
     );
+    const added = row.filter((u) => !saved.includes(u)).sort(compare);
+    const projected = saved.map((u) => ({ ...u }));
+    place(
+      projected,
+      saved.map((u) => targets.get(u)!),
+    );
+    const merged: Unit[] = [];
+    let next = 0;
+    for (const [j, unit] of saved.entries()) {
+      while (
+        next < added.length &&
+        (targets.get(added[next])! < projected[j].x ||
+          (targets.get(added[next]) === projected[j].x &&
+            compare(added[next], unit) < 0))
+      )
+        merged.push(added[next++]);
+      merged.push(unit);
+    }
+    merged.push(...added.slice(next));
+    row.splice(0, row.length, ...merged);
   }
   // Lay out older rows outward from the reference generation. A newly recorded
   // ancestor takes the horizontal position of its descendants' branch, rather
@@ -326,10 +328,10 @@ export function makeGenerationLayout(
     return { member, parents };
   });
   const isCentered = (i: number) => singletons[i]?.parents.length === 0;
+  const branchPositions = new Map(relatives.map((p) => [p.id, x(p.id)!]));
   const rowBounds = rows.map((row, i) => {
     if (!row.length) return { left: referenceX, right: referenceX };
-    // Move the whole row so a folded friends card keeps its spacing from the
-    // only relative on that row.
+    // Move the whole row so friends keep their spacing from the only relative.
     if (isCentered(i)) {
       const shift = referenceX - x(singletons[i]!.member.id)!;
       for (const unit of row) unit.x += shift;
@@ -338,7 +340,7 @@ export function makeGenerationLayout(
     const right = Math.max(...row.map((unit) => unit.x + unit.width / 2));
     return { left, right };
   });
-  const width =
+  let width =
     Math.max(
       initialInnerWidth,
       ...rowBounds.map(({ left, right }, i) =>
@@ -349,8 +351,8 @@ export function makeGenerationLayout(
     ) +
     canvasPadding * 2;
   const centeredOffset = width / 2 - referenceX;
-  // Shift linked rows together when they fit, so existing lines stay aligned.
-  // With branches on opposite edges, only shift rows that actually overflow.
+  // Prefer a shared offset that fits the existing row spans before propagating
+  // the final centering displacement through each descendant branch.
   const linkedRows = rowBounds.filter((_, i) => generations[i].count > 1);
   const lower = Math.max(...linkedRows.map(({ left }) => canvasPadding - left));
   const upper = Math.min(
@@ -360,35 +362,65 @@ export function makeGenerationLayout(
     lower <= upper
       ? Math.max(lower, Math.min(upper, centeredOffset))
       : centeredOffset;
-  const rowOffsets: number[] = [];
-  for (const [i, { left, right }] of rowBounds.entries()) {
+  const before = new Map(
+    [...branchPositions].map(([id, position]) => [id, position + sharedOffset]),
+  );
+  for (const [i, row] of rows.entries()) {
     const singleton = singletons[i];
-    let targetOffset = sharedOffset;
-    if (singleton) {
-      // Use parents' final positions: a wide row can shift to fit the canvas,
-      // and a parent on a single-person row may already have been aligned.
-      targetOffset = singleton.parents.length
-        ? center(
-            singleton.parents.map(
-              (p) => x(p.id)! + rowOffsets[p.generation - first],
-            ),
-          ) - x(singleton.member.id)!
-        : centeredOffset;
+    for (const unit of row) unit.x += sharedOffset;
+    if (singleton && !singleton.parents.length) {
+      const shift = width / 2 - x(singleton.member.id)!;
+      for (const unit of row) unit.x += shift;
+    } else {
+      // Propagate parents' final displacement to the entire child branch.
+      // Preserve the balanced sibling spacing from the refinement passes.
+      const linked = new Set<Unit>();
+      const target = (unit: Unit, offsets: boolean) => {
+        const values = unit.people.flatMap((member) => {
+          const parents = member.parentIds.filter((id) => {
+            const parent = byId.get(id);
+            return parent && parent.generation < member.generation;
+          });
+          if (!parents.length) return [];
+          linked.add(unit);
+          const parentCenter = center(parents.map((id) => x(id)!));
+          return [
+            singleton
+              ? parentCenter - (offsets ? owners.get(member.id)!.offset : 0)
+              : unit.x +
+                parentCenter -
+                center(parents.map((id) => before.get(id)!)),
+          ];
+        });
+        return values.length ? average(values) : unit.x;
+      };
+      sortRow(i, (unit) => target(unit, false));
+      // Free-standing cards yield space to linked branches rather than pulling
+      // those children away from their parents during collision resolution.
+      place(
+        row,
+        row.map((unit) => target(unit, true)),
+        row.map((unit) => linked.has(unit)),
+      );
     }
-    rowOffsets.push(
-      Math.max(
-        canvasPadding - left,
-        Math.min(width - canvasPadding - right, targetOffset),
-      ),
-    );
   }
+  // Fit the complete tree as one piece. Clamping each generation separately
+  // would pull a wide child/friends group away from its parents again.
+  const left = Math.min(...rows.flat().map((unit) => unit.x - unit.width / 2));
+  const right = Math.max(...rows.flat().map((unit) => unit.x + unit.width / 2));
+  const expansion = Math.max(
+    0,
+    canvasPadding - left,
+    right + canvasPadding - width,
+  );
+  width += expansion * 2;
+  for (const unit of rows.flat()) unit.x += expansion;
   const nodes = new Map<string, { x: number; y: number }>();
-  const friendGroups = new Map<string, { x: number; y: number }>();
   rows.forEach((row, i) =>
     row.forEach((u) =>
       u.slots.forEach((s) => {
-        (s.friend ? friendGroups : nodes).set(s.id, {
-          x: u.x + s.offset + rowOffsets[i],
+        nodes.set(s.id, {
+          x: u.x + s.offset,
           y: generations[i].y,
         });
       }),
@@ -398,12 +430,12 @@ export function makeGenerationLayout(
   const groups = rows.flatMap((row, i) => {
     const runs: { familyId: string; points: number[] }[] = [];
     row
-      .flatMap((u) =>
-        u.slots.map((s) => ({ ...s, x: u.x + s.offset + rowOffsets[i] })),
-      )
+      .flatMap((u) => u.slots.map((s) => ({ ...s, x: u.x + s.offset })))
       .sort((a, b) => a.x - b.x)
-      .forEach((s) => {
-        if (runs.at(-1)?.familyId === s.familyId) runs.at(-1)!.points.push(s.x);
+      .forEach((s, i, slots) => {
+        if (s.friend) return;
+        if (!slots[i - 1]?.friend && runs.at(-1)?.familyId === s.familyId)
+          runs.at(-1)!.points.push(s.x);
         else runs.push({ familyId: s.familyId, points: [s.x] });
       });
     return runs.flatMap((run, j) => {
@@ -432,7 +464,6 @@ export function makeGenerationLayout(
   });
   return {
     nodes,
-    friendGroups,
     groups,
     generations,
     width,

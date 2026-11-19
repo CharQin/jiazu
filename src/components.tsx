@@ -314,9 +314,7 @@ export function Profile({
       <div className="profile-identity">
         <Avatar person={person} size={78} />
         {person.id !== data.selfId && (person.relation || isFriend(person)) && (
-          <span className="relation-badge">
-            {person.relation || "家庭朋友"}
-          </span>
+          <span className="relation-badge">{person.relation || "朋友"}</span>
         )}
         <h2>
           {personName(person, data.selfId)}
@@ -332,7 +330,7 @@ export function Profile({
           {person.deceased ? <Memorial /> : years || "年龄待补充"}
           <i />
           {person.occupation ||
-            (isFriend(person) ? "家庭朋友" : generationName(person.generation))}
+            (isFriend(person) ? "朋友" : generationName(person.generation))}
         </p>
         <div className="profile-tags">
           {person.tags.map((t) => (
@@ -386,9 +384,7 @@ export function Profile({
         </h3>
         {isFriend(person) ? (
           <p className="small-muted">
-            {host
-              ? `${personName(host, data.selfId)}的朋友`
-              : `${familyName(family, data.people)}的朋友`}
+            {host ? `${personName(host, data.selfId)}的朋友` : "暂未关联家人"}
           </p>
         ) : person.id === data.selfId ? null : path.length ? (
           <div className="relation-path">
@@ -405,41 +401,45 @@ export function Profile({
         ) : (
           <p className="small-muted">可编辑父母或伴侣关系，补充亲属连线。</p>
         )}
-        <div className="profile-family">
-          <span className="small-house">
-            <Home size={16} />
-          </span>
-          <div>
-            <strong>{familyName(family, data.people)}</strong>
-            <small>
-              {[...(deriveBranches(data).get(person.id) ?? [])]
-                .map((b) => branchInfo[b].label)
-                .join(" / ")}{" "}
-              · {relatives.length} 位家人
-            </small>
-          </div>
-          <div className="avatar-stack">
-            {relatives
-              .filter((p) => p.id !== person.id)
-              .slice(0, 3)
-              .map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => onSelect(p)}
-                  aria-label={`查看${personName(p, data.selfId)}`}
-                >
-                  <Avatar person={p} size={27} />
-                </button>
-              ))}
-          </div>
-        </div>
-        <button
-          className="button soft full-width profile-add-friend"
-          onClick={onFriend}
-        >
-          <UserRoundPlus size={15} />
-          添加朋友到这个家庭
-        </button>
+        {!isFriend(person) && (
+          <>
+            <div className="profile-family">
+              <span className="small-house">
+                <Home size={16} />
+              </span>
+              <div>
+                <strong>{familyName(family, data.people)}</strong>
+                <small>
+                  {[...(deriveBranches(data).get(person.id) ?? [])]
+                    .map((b) => branchInfo[b].label)
+                    .join(" / ")}{" "}
+                  · {relatives.length} 位家人
+                </small>
+              </div>
+              <div className="avatar-stack">
+                {relatives
+                  .filter((p) => p.id !== person.id)
+                  .slice(0, 3)
+                  .map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => onSelect(p)}
+                      aria-label={`查看${personName(p, data.selfId)}`}
+                    >
+                      <Avatar person={p} size={27} />
+                    </button>
+                  ))}
+              </div>
+            </div>
+            <button
+              className="button soft full-width profile-add-friend"
+              onClick={onFriend}
+            >
+              <UserRoundPlus size={15} />
+              为这位家人添加朋友
+            </button>
+          </>
+        )}
       </div>
       {person.note && (
         <div className="profile-section">

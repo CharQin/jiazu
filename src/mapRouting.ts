@@ -407,18 +407,15 @@ export function routeFamilyMap(
   people: readonly Person[],
   nodes: ReadonlyMap<string, Point>,
   tree: boolean,
-  friends: ReadonlyMap<string, Point> = new Map(),
 ) {
   const halfW = personCardWidth / 2,
     halfH = personCardHeight / 2;
-  const boxes: Obstacle[] = [...nodes.values(), ...friends.values()].map(
-    (p) => ({
-      left: p.x - halfW - 6,
-      right: p.x + halfW + 6,
-      top: p.y - halfH - 6,
-      bottom: p.y + halfH + 6,
-    }),
-  );
+  const boxes: Obstacle[] = [...nodes.values()].map((p) => ({
+    left: p.x - halfW - 6,
+    right: p.x + halfW + 6,
+    top: p.y - halfH - 6,
+    bottom: p.y + halfH + 6,
+  }));
   const used: Segment[] = [];
   const curveBoxes = boxes.map((b) => ({
     left: b.left + 5,

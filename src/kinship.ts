@@ -325,15 +325,10 @@ export function deriveBranches(data: KinshipData) {
         .add(data.families.find((f) => f.id === p.familyId)?.branch ?? "other");
   }
   for (const p of data.people.filter((p) => !relative(p))) {
-    const hosts = p.friendOfId
-      ? [byId.get(p.friendOfId)].filter((p) => p !== undefined)
-      : members.filter((m) => m.familyId === p.familyId);
-    for (const host of hosts)
-      for (const side of result.get(host.id) ?? []) result.get(p.id)!.add(side);
-    if (!result.get(p.id)!.size)
-      result
-        .get(p.id)!
-        .add(data.families.find((f) => f.id === p.familyId)?.branch ?? "other");
+    const sides = result.get(p.id)!;
+    const host = byId.get(p.friendOfId ?? "");
+    for (const side of (host && result.get(host.id)) || []) sides.add(side);
+    if (!sides.size) sides.add("other");
   }
   return result;
 }
